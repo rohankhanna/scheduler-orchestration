@@ -59,6 +59,12 @@ paths:
           schema:
             type: string
             minLength: 1
+        - name: refresh
+          in: query
+          required: false
+          schema:
+            type: boolean
+          description: When true, query the scheduler backend and persist refreshed scheduler state into the ledger.
       responses:
         '200':
           description: Job status.

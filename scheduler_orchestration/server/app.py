@@ -8,7 +8,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import FastAPI, Header, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
@@ -305,6 +305,7 @@ def create_app() -> FastAPI:
     @app.get("/v1/jobs/{server_job_id}")
     def get_job(
         server_job_id: str,
+        refresh: bool = Query(default=False),
         x_api_key: str | None = Header(default=None, alias="X-API-Key"),
     ) -> dict[str, Any]:
         _require_api_key(x_api_key)
@@ -331,6 +332,9 @@ def create_app() -> FastAPI:
                 items = _parse_squeue_output(proc.stdout)
                 if items:
                     record["scheduler_state"] = items[0].get("state")
+                    if refresh:
+                        record["last_refresh_at"] = utc_now_rfc3339()
+                        write_job_record(_runtime_dir(), record)
 
         return {
             "server_job_id": record.get("server_job_id", server_job_id),
