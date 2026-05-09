@@ -108,6 +108,30 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+  /v1/jobs/{job_id}/logs:
+    get:
+      operationId: getJobLogs
+      summary: Get captured logs for a direct backend job.
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+      responses:
+        '200':
+          description: Captured stdout/stderr.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetJobLogsResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /v1/queue:
     get:
       operationId: listQueue
@@ -264,6 +288,21 @@ components:
         detail:
           type: object
           additionalProperties: true
+    GetJobLogsResponse:
+      type: object
+      additionalProperties: false
+      required: [server_job_id, execution_backend, stdout, stderr]
+      properties:
+        server_job_id:
+          type: string
+          minLength: 1
+        execution_backend:
+          type: string
+          description: Currently only direct backend jobs support captured logs.
+        stdout:
+          type: string
+        stderr:
+          type: string
     QueueResponse:
       type: object
       additionalProperties: false

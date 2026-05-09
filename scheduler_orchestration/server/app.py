@@ -137,6 +137,20 @@ def _direct_payload_execution_enabled() -> bool:
     return val in {"1", "true", "yes", "on"}
 
 
+def _direct_log_capture_max_bytes() -> int:
+    raw = os.environ.get("SCHED_ORCH_DIRECT_LOG_CAPTURE_MAX_BYTES", "65536").strip()
+    try:
+        n = int(raw)
+    except ValueError:
+        return 65536
+
+    if n < 0:
+        return 0
+    if n > 10 * 1024 * 1024:
+        return 10 * 1024 * 1024
+    return n
+
+
 def _execution_backend() -> str:
     return os.environ.get("SCHED_ORCH_EXECUTION_BACKEND", "slurm").strip().lower()
 
@@ -461,9 +475,24 @@ def create_app() -> FastAPI:
                     state = "failed"
                 else:
                     exit_code = int(proc.returncode)
-                    _write_job_log_text(server_job_id, "stdout", proc.stdout or "")
-                    _write_job_log_text(server_job_id, "stderr", proc.stderr or "")
-                    log_capture = {"stdout": True, "stderr": True}
+
+                    max_bytes = _direct_log_capture_max_bytes()
+                    raw_stdout = proc.stdout or ""
+                    raw_stderr = proc.stderr or ""
+                    stdout_text = raw_stdout[:max_bytes]
+                    stderr_text = raw_stderr[:max_bytes]
+
+                    _write_job_log_text(server_job_id, "stdout", stdout_text)
+                    _write_job_log_text(server_job_id, "stderr", stderr_text)
+
+                    log_capture = {
+                        "stdout": True,
+                        "stderr": True,
+                        "truncated_stdout": len(raw_stdout) > len(stdout_text),
+                        "truncated_stderr": len(raw_stderr) > len(stderr_text),
+                        "max_bytes": max_bytes,
+                    }
+
                     state = "succeeded" if proc.returncode == 0 else "failed"
 
         if plan["allowed"] and backend != "direct" and _scheduler_execution_enabled():

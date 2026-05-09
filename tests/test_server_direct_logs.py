@@ -59,7 +59,8 @@ def test_direct_exec_persists_logs_and_exposes_logs_endpoint(tmp_path, monkeypat
     detail = json.loads(
         (tmp_path / "scheduler-job-ledger" / "jobs" / f"{server_job_id}.json").read_text(encoding="utf-8")
     )
-    assert detail["log_capture"] == {"stdout": True, "stderr": True}
+    assert detail["log_capture"]["stdout"] is True
+    assert detail["log_capture"]["stderr"] is True
 
     logs = client.get(
         f"/v1/jobs/{server_job_id}/logs",
