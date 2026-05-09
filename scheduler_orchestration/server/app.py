@@ -13,9 +13,8 @@ from fastapi import FastAPI, Header, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from scheduler_orchestration.backends import get_backend_ops
 from scheduler_orchestration.direct_backend import (
-    build_direct_submission_plan,
-    build_systemctl_cancel_direct_command,
     build_systemd_run_direct_command,
     direct_scope_name_from_record,
     direct_systemd_scope_name,
@@ -30,8 +29,6 @@ from scheduler_orchestration.job_ledger import (
     write_job_record,
 )
 from scheduler_orchestration.slurm_adapter import (
-    build_scancel_command,
-    build_submission_plan,
     build_squeue_job_query_command,
     build_squeue_list_command,
 )
@@ -425,17 +422,15 @@ def create_app() -> FastAPI:
         server_job_id = str(uuid.uuid4())
         backend = _execution_backend()
 
-        # Build a submission plan.
-        # - slurm: existing sbatch-based plan builder
-        # - direct: systemd-run scoped execution (payload can be gated)
-        if backend == "direct":
-            plan = build_direct_submission_plan(
-                spec,
-                _drain_state_path(),
-                payload_execution_enabled=_direct_payload_execution_enabled(),
-            )
-        else:
-            plan = build_submission_plan(spec, drain_state_path=_drain_state_path())
+        backend_ops = get_backend_ops(
+            backend,
+            drain_state_path=_drain_state_path(),
+            direct_payload_execution_enabled=_direct_payload_execution_enabled(),
+        )
+        if not backend_ops:
+            raise HTTPException(status_code=400, detail="bad_request")
+
+        plan = backend_ops.build_plan(spec, _drain_state_path())
 
         created_at = utc_now_rfc3339()
         spec_hash = spec_sha256(spec)
@@ -700,26 +695,23 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail="not_found")
 
         backend = record.get("execution_backend")
-        scheduler_job_id = record.get("scheduler_job_id")
 
         # Conservative policy: cancellation is an execution/control action, so keep it gated.
-        if backend == "slurm":
-            if not _scheduler_execution_enabled():
-                raise HTTPException(status_code=400, detail="bad_request")
+        if backend == "slurm" and not _scheduler_execution_enabled():
+            raise HTTPException(status_code=400, detail="bad_request")
+        if backend == "direct" and not _direct_cancel_enabled():
+            raise HTTPException(status_code=400, detail="bad_request")
 
-            if not isinstance(scheduler_job_id, str) or not scheduler_job_id.strip():
-                raise HTTPException(status_code=400, detail="bad_request")
+        backend_ops = get_backend_ops(
+            str(backend or ""),
+            drain_state_path=_drain_state_path(),
+            direct_payload_execution_enabled=_direct_payload_execution_enabled(),
+        )
+        if not backend_ops:
+            raise HTTPException(status_code=400, detail="bad_request")
 
-            cmd = build_scancel_command(scheduler_job_id)
-        elif backend == "direct":
-            if not _direct_cancel_enabled():
-                raise HTTPException(status_code=400, detail="bad_request")
-
-            scope_name = direct_scope_name_from_record(record)
-            if not scope_name:
-                raise HTTPException(status_code=400, detail="bad_request")
-            cmd = build_systemctl_cancel_direct_command(scope_name)
-        else:
+        cmd = backend_ops.build_cancel_command(record)
+        if not cmd:
             raise HTTPException(status_code=400, detail="bad_request")
 
         try:
