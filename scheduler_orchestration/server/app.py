@@ -89,6 +89,12 @@ def _scheduler_execution_enabled() -> bool:
     return val in {"1", "true", "yes", "on"}
 
 
+def _direct_cancel_enabled() -> bool:
+    # Cancellation is a control action; keep it explicitly gated for direct execution backend.
+    val = os.environ.get("SCHED_ORCH_ENABLE_DIRECT_CANCEL", "0").strip().lower()
+    return val in {"1", "true", "yes", "on"}
+
+
 def _direct_execution_enabled() -> bool:
     # Safety default: do not execute direct workloads unless explicitly enabled.
     val = os.environ.get("SCHED_ORCH_ENABLE_DIRECT_EXEC", "0").strip().lower()
@@ -155,7 +161,7 @@ def _build_systemd_run_direct_command(server_job_id: str, payload_argv: list[str
     cpu_weight = os.environ.get("SCHED_ORCH_JOBS_CPU_WEIGHT", "80").strip()
     io_weight = os.environ.get("SCHED_ORCH_JOBS_IO_WEIGHT", "80").strip()
 
-    unit_name = f"sched-orch-job-{server_job_id}.scope"
+    unit_name = _direct_systemd_scope_name(server_job_id)
 
     return [
         "systemd-run",
@@ -172,6 +178,14 @@ def _build_systemd_run_direct_command(server_job_id: str, payload_argv: list[str
         "--",
         *payload_argv,
     ]
+
+
+def _direct_systemd_scope_name(server_job_id: str) -> str:
+    return f"sched-orch-job-{server_job_id}.scope"
+
+
+def _build_systemctl_cancel_direct_command(server_job_id: str) -> list[str]:
+    return ["systemctl", "kill", "--kill-who=all", _direct_systemd_scope_name(server_job_id)]
 
 
 def _direct_payload_argv_from_spec(spec: dict[str, Any]) -> list[str] | None:
@@ -575,16 +589,22 @@ def create_app() -> FastAPI:
         scheduler_job_id = record.get("scheduler_job_id")
 
         # Conservative policy: cancellation is an execution/control action, so keep it gated.
-        if not _scheduler_execution_enabled():
+        if backend == "slurm":
+            if not _scheduler_execution_enabled():
+                raise HTTPException(status_code=400, detail="bad_request")
+
+            if not isinstance(scheduler_job_id, str) or not scheduler_job_id.strip():
+                raise HTTPException(status_code=400, detail="bad_request")
+
+            cmd = build_scancel_command(scheduler_job_id)
+        elif backend == "direct":
+            if not _direct_cancel_enabled():
+                raise HTTPException(status_code=400, detail="bad_request")
+
+            cmd = _build_systemctl_cancel_direct_command(server_job_id)
+        else:
             raise HTTPException(status_code=400, detail="bad_request")
 
-        if backend != "slurm":
-            raise HTTPException(status_code=400, detail="bad_request")
-
-        if not isinstance(scheduler_job_id, str) or not scheduler_job_id.strip():
-            raise HTTPException(status_code=400, detail="bad_request")
-
-        cmd = build_scancel_command(scheduler_job_id)
         try:
             subprocess.run(
                 cmd,

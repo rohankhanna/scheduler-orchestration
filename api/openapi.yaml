@@ -87,7 +87,7 @@ paths:
           $ref: '#/components/responses/NotFound'
     delete:
       operationId: cancelJob
-      summary: Cancel a job via the scheduler backend.
+      summary: Cancel a job via the active execution backend.
       parameters:
         - name: job_id
           in: path
