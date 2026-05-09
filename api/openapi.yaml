@@ -73,7 +73,7 @@ paths:
           required: false
           schema:
             type: boolean
-          description: When true, query the scheduler backend and persist refreshed scheduler state into the ledger.
+          description: When true, query the backend and persist refreshed state into the ledger. For direct backend this requires SCHED_ORCH_ENABLE_DIRECT_REFRESH=1.
       responses:
         '200':
           description: Job status.

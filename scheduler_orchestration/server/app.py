@@ -188,6 +188,26 @@ def _build_systemctl_cancel_direct_command(server_job_id: str) -> list[str]:
     return ["systemctl", "kill", "--kill-who=all", _direct_systemd_scope_name(server_job_id)]
 
 
+def _direct_refresh_enabled() -> bool:
+    # Refresh is an observation/control-plane query; keep it explicitly gated for direct backend.
+    val = os.environ.get("SCHED_ORCH_ENABLE_DIRECT_REFRESH", "0").strip().lower()
+    return val in {"1", "true", "yes", "on"}
+
+
+def _parse_systemctl_show_properties(stdout: str) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for raw_line in stdout.splitlines():
+        line = raw_line.strip()
+        if not line or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        k = k.strip()
+        v = v.strip()
+        if k:
+            out[k] = v
+    return out
+
+
 def _direct_payload_argv_from_spec(spec: dict[str, Any]) -> list[str] | None:
     payload = spec.get("payload")
     if not isinstance(payload, dict):
@@ -545,6 +565,8 @@ def create_app() -> FastAPI:
         if not record:
             raise HTTPException(status_code=404, detail="not_found")
 
+        backend = record.get("execution_backend")
+
         scheduler_job_id = record.get("scheduler_job_id")
         if isinstance(scheduler_job_id, str) and scheduler_job_id.strip():
             cmd = build_squeue_job_query_command(scheduler_job_id)
@@ -566,6 +588,30 @@ def create_app() -> FastAPI:
                     if refresh:
                         record["last_refresh_at"] = utc_now_rfc3339()
                         write_job_record(_runtime_dir(), record)
+
+        if backend == "direct" and refresh:
+            if not _direct_refresh_enabled():
+                raise HTTPException(status_code=400, detail="bad_request")
+
+            unit_name = _direct_systemd_scope_name(server_job_id)
+            cmd = ["systemctl", "show", unit_name, "--property=ActiveState", "--property=SubState", "--no-pager"]
+            try:
+                proc = subprocess.run(
+                    cmd,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+            except (subprocess.TimeoutExpired, subprocess.CalledProcessError, FileNotFoundError):
+                # Best-effort; do not fail the request for observation errors.
+                pass
+            else:
+                props = _parse_systemctl_show_properties(proc.stdout)
+                record["direct_scope_active_state"] = props.get("ActiveState")
+                record["direct_scope_sub_state"] = props.get("SubState")
+                record["last_refresh_at"] = utc_now_rfc3339()
+                write_job_record(_runtime_dir(), record)
 
         return {
             "server_job_id": record.get("server_job_id", server_job_id),
