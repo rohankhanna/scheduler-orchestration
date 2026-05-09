@@ -19,6 +19,7 @@ def _write_direct_job(runtime_dir: Path, server_job_id: str) -> None:
                 "state": "submitted",
                 "scheduler_job_id": None,
                 "execution_backend": "direct",
+                "direct_scope_name": f"sched-orch-job-{server_job_id}.scope",
                 "accepted": True,
                 "reason": "ok",
                 "command": ["echo", "hello"],

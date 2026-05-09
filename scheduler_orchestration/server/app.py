@@ -184,8 +184,19 @@ def _direct_systemd_scope_name(server_job_id: str) -> str:
     return f"sched-orch-job-{server_job_id}.scope"
 
 
-def _build_systemctl_cancel_direct_command(server_job_id: str) -> list[str]:
-    return ["systemctl", "kill", "--kill-who=all", _direct_systemd_scope_name(server_job_id)]
+def _direct_scope_name_from_record(record: dict[str, Any]) -> str | None:
+    scope_name = record.get("direct_scope_name")
+    if isinstance(scope_name, str) and scope_name.strip():
+        return scope_name.strip()
+
+    server_job_id = str(record.get("server_job_id", "")).strip()
+    if not server_job_id:
+        return None
+    return _direct_systemd_scope_name(server_job_id)
+
+
+def _build_systemctl_cancel_direct_command(scope_name: str) -> list[str]:
+    return ["systemctl", "kill", "--kill-who=all", scope_name]
 
 
 def _direct_refresh_enabled() -> bool:
@@ -554,11 +565,14 @@ def create_app() -> FastAPI:
                             if not server_job_id:
                                 continue
 
-                            unit_name = _direct_systemd_scope_name(server_job_id)
+                            scope_name = _direct_scope_name_from_record(record)
+                            if not scope_name:
+                                continue
+
                             cmd = [
                                 "systemctl",
                                 "show",
-                                unit_name,
+                                scope_name,
                                 "--property=ActiveState",
                                 "--property=SubState",
                                 "--no-pager",
@@ -642,8 +656,11 @@ def create_app() -> FastAPI:
             if not _direct_refresh_enabled():
                 raise HTTPException(status_code=400, detail="bad_request")
 
-            unit_name = _direct_systemd_scope_name(server_job_id)
-            cmd = ["systemctl", "show", unit_name, "--property=ActiveState", "--property=SubState", "--no-pager"]
+            scope_name = _direct_scope_name_from_record(record)
+            if not scope_name:
+                raise HTTPException(status_code=400, detail="bad_request")
+
+            cmd = ["systemctl", "show", scope_name, "--property=ActiveState", "--property=SubState", "--no-pager"]
             try:
                 proc = subprocess.run(
                     cmd,
@@ -696,7 +713,10 @@ def create_app() -> FastAPI:
             if not _direct_cancel_enabled():
                 raise HTTPException(status_code=400, detail="bad_request")
 
-            cmd = _build_systemctl_cancel_direct_command(server_job_id)
+            scope_name = _direct_scope_name_from_record(record)
+            if not scope_name:
+                raise HTTPException(status_code=400, detail="bad_request")
+            cmd = _build_systemctl_cancel_direct_command(scope_name)
         else:
             raise HTTPException(status_code=400, detail="bad_request")
 
