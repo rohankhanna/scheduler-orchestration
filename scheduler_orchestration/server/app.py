@@ -205,6 +205,12 @@ def _direct_refresh_enabled() -> bool:
     return val in {"1", "true", "yes", "on"}
 
 
+def _direct_state_inference_enabled() -> bool:
+    # Optional promotion from low-level scope state to high-level job state.
+    val = os.environ.get("SCHED_ORCH_ENABLE_DIRECT_STATE_INFERENCE", "0").strip().lower()
+    return val in {"1", "true", "yes", "on"}
+
+
 def _parse_systemctl_show_properties(stdout: str) -> dict[str, str]:
     out: dict[str, str] = {}
     for raw_line in stdout.splitlines():
@@ -217,6 +223,35 @@ def _parse_systemctl_show_properties(stdout: str) -> dict[str, str]:
         if k:
             out[k] = v
     return out
+
+
+def _infer_direct_job_state_from_scope(record: dict[str, Any]) -> str | None:
+    # Only infer terminal state when systemd says the unit is not active anymore.
+    active = str(record.get("direct_scope_active_state") or "").strip().lower()
+    sub = str(record.get("direct_scope_sub_state") or "").strip().lower()
+    result = str(record.get("direct_scope_result") or "").strip().lower()
+
+    if active in {"active", "activating", "reloading"}:
+        return "running"
+
+    if active in {"inactive", "failed", "deactivating"}:
+        # If we have an exit code, trust it.
+        exit_code = record.get("exit_code")
+        if isinstance(exit_code, int):
+            return "succeeded" if exit_code == 0 else "failed"
+
+        # Fall back to systemd 'Result' when present.
+        if result in {"success", "exit-code"}:
+            # 'exit-code' may still be failure, but we don't know the code.
+            return "failed" if result == "exit-code" else "succeeded"
+        if result in {"timeout", "signal", "core-dump", "watchdog", "resources"}:
+            return "failed"
+
+        # If the scope is dead/inactive but we have no exit code, record unknown.
+        if sub in {"dead", "failed"}:
+            return "unknown"
+
+    return None
 
 
 def _direct_payload_argv_from_spec(spec: dict[str, Any]) -> list[str] | None:
@@ -575,6 +610,7 @@ def create_app() -> FastAPI:
                                 scope_name,
                                 "--property=ActiveState",
                                 "--property=SubState",
+                                "--property=Result",
                                 "--no-pager",
                             ]
                             try:
@@ -591,7 +627,14 @@ def create_app() -> FastAPI:
                             props = _parse_systemctl_show_properties(proc.stdout)
                             record["direct_scope_active_state"] = props.get("ActiveState")
                             record["direct_scope_sub_state"] = props.get("SubState")
+                            record["direct_scope_result"] = props.get("Result")
                             record["last_refresh_at"] = utc_now_rfc3339()
+
+                            if _direct_state_inference_enabled():
+                                inferred = _infer_direct_job_state_from_scope(record)
+                                if inferred:
+                                    record["state"] = inferred
+
                             write_job_record(runtime_dir, record)
                 except Exception:
                     # Best-effort only: do not fail the list endpoint for refresh failures.
@@ -660,7 +703,15 @@ def create_app() -> FastAPI:
             if not scope_name:
                 raise HTTPException(status_code=400, detail="bad_request")
 
-            cmd = ["systemctl", "show", scope_name, "--property=ActiveState", "--property=SubState", "--no-pager"]
+            cmd = [
+                "systemctl",
+                "show",
+                scope_name,
+                "--property=ActiveState",
+                "--property=SubState",
+                "--property=Result",
+                "--no-pager",
+            ]
             try:
                 proc = subprocess.run(
                     cmd,
@@ -676,7 +727,14 @@ def create_app() -> FastAPI:
                 props = _parse_systemctl_show_properties(proc.stdout)
                 record["direct_scope_active_state"] = props.get("ActiveState")
                 record["direct_scope_sub_state"] = props.get("SubState")
+                record["direct_scope_result"] = props.get("Result")
                 record["last_refresh_at"] = utc_now_rfc3339()
+
+                if _direct_state_inference_enabled():
+                    inferred = _infer_direct_job_state_from_scope(record)
+                    if inferred:
+                        record["state"] = inferred
+
                 write_job_record(_runtime_dir(), record)
 
         return {
