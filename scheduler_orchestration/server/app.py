@@ -38,6 +38,31 @@ def _drain_state_path() -> Path:
     return _runtime_dir() / "operator" / "drain_state.json"
 
 
+def _job_logs_dir(server_job_id: str) -> Path:
+    return _runtime_dir() / "scheduler-job-ledger" / "logs" / server_job_id
+
+
+def _job_log_path(server_job_id: str, stream: str) -> Path:
+    return _job_logs_dir(server_job_id) / f"{stream}.txt"
+
+
+def _write_job_log_text(server_job_id: str, stream: str, text: str) -> None:
+    path = _job_log_path(server_job_id, stream)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    try:
+        os.chmod(path, 0o600)
+    except PermissionError:
+        pass
+
+
+def _read_job_log_text(server_job_id: str, stream: str) -> str | None:
+    path = _job_log_path(server_job_id, stream)
+    if not path.exists():
+        return None
+    return path.read_text(encoding="utf-8")
+
+
 def _require_api_key(x_api_key: str | None) -> None:
     expected = os.environ.get("SCHED_ORCH_API_KEY")
     if not expected:
@@ -494,6 +519,7 @@ def create_app() -> FastAPI:
         scheduler_job_id: str | None = None
         exit_code: int | None = None
         direct_scope_name: str | None = _direct_systemd_scope_name(server_job_id) if backend == "direct" else None
+        log_capture = {"stdout": False, "stderr": False}
         state = "accepted" if plan["allowed"] else "blocked"
 
         if plan["allowed"] and backend == "direct" and _direct_execution_enabled():
@@ -516,6 +542,9 @@ def create_app() -> FastAPI:
                     state = "failed"
                 else:
                     exit_code = int(proc.returncode)
+                    _write_job_log_text(server_job_id, "stdout", proc.stdout or "")
+                    _write_job_log_text(server_job_id, "stderr", proc.stderr or "")
+                    log_capture = {"stdout": True, "stderr": True}
                     state = "succeeded" if proc.returncode == 0 else "failed"
 
         if plan["allowed"] and backend != "direct" and _scheduler_execution_enabled():
@@ -550,6 +579,7 @@ def create_app() -> FastAPI:
             "exit_code": exit_code,
             "execution_backend": backend,
             "direct_scope_name": direct_scope_name,
+            "log_capture": log_capture,
             "accepted": bool(plan["allowed"]),
             "reason": plan["reason"],
             "command": plan["command"],
@@ -705,6 +735,33 @@ def create_app() -> FastAPI:
             "state": record.get("state", "unknown"),
             "scheduler_job_id": record.get("scheduler_job_id"),
             "detail": record,
+        }
+
+    @app.get("/v1/jobs/{server_job_id}/logs")
+    def get_job_logs(
+        server_job_id: str,
+        x_api_key: str | None = Header(default=None, alias="X-API-Key"),
+    ) -> dict[str, Any]:
+        _require_api_key(x_api_key)
+
+        record = read_job_record(_runtime_dir(), server_job_id)
+        if not record:
+            raise HTTPException(status_code=404, detail="not_found")
+
+        backend = record.get("execution_backend")
+        if backend != "direct":
+            raise HTTPException(status_code=400, detail="bad_request")
+
+        stdout = _read_job_log_text(server_job_id, "stdout")
+        stderr = _read_job_log_text(server_job_id, "stderr")
+        if stdout is None and stderr is None:
+            raise HTTPException(status_code=404, detail="not_found")
+
+        return {
+            "server_job_id": server_job_id,
+            "execution_backend": backend,
+            "stdout": stdout or "",
+            "stderr": stderr or "",
         }
 
     @app.delete("/v1/jobs/{server_job_id}")
