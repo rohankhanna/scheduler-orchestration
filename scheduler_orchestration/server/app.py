@@ -110,6 +110,25 @@ def _startup_reconcile_max_jobs() -> int:
         n = int(raw)
     except ValueError:
         return 50
+    return _cap_reconcile_job_limit(n)
+
+
+def _bulk_refresh_enabled() -> bool:
+    # Safety default: bulk refresh is an active scheduler query + ledger mutation, so keep it gated.
+    val = os.environ.get("SCHED_ORCH_ENABLE_BULK_REFRESH", "0").strip().lower()
+    return val in {"1", "true", "yes", "on"}
+
+
+def _bulk_refresh_max_jobs() -> int:
+    raw = os.environ.get("SCHED_ORCH_BULK_REFRESH_MAX_JOBS", "200").strip()
+    try:
+        n = int(raw)
+    except ValueError:
+        return 200
+    return _cap_reconcile_job_limit(n)
+
+
+def _cap_reconcile_job_limit(n: int) -> int:
     if n < 0:
         return 0
     if n > 1000:
@@ -363,11 +382,71 @@ def create_app() -> FastAPI:
         }
 
     @app.get("/v1/jobs")
-    def list_jobs(x_api_key: str | None = Header(default=None, alias="X-API-Key")) -> dict[str, Any]:
+    def list_jobs(
+        refresh: bool = Query(default=False),
+        x_api_key: str | None = Header(default=None, alias="X-API-Key"),
+    ) -> dict[str, Any]:
         _require_api_key(x_api_key)
 
+        runtime_dir = _runtime_dir()
+
+        if refresh:
+            if not _bulk_refresh_enabled():
+                raise HTTPException(status_code=400, detail="bad_request")
+
+            max_jobs = _bulk_refresh_max_jobs()
+            if max_jobs > 0:
+                try:
+                    paths = list_job_paths(runtime_dir)
+
+                    terminal_states = {"blocked", "failed", "canceled", "succeeded"}
+
+                    candidates: list[dict[str, Any]] = []
+                    for path in paths:
+                        record = read_job_record_from_path(path)
+                        if record.get("execution_backend") != "slurm":
+                            continue
+
+                        scheduler_job_id = record.get("scheduler_job_id")
+                        if not isinstance(scheduler_job_id, str) or not scheduler_job_id.strip():
+                            continue
+
+                        if record.get("state") in terminal_states:
+                            continue
+
+                        candidates.append(record)
+                        if len(candidates) >= max_jobs:
+                            break
+
+                    if candidates:
+                        cmd = build_squeue_list_command()
+                        proc = subprocess.run(
+                            cmd,
+                            check=True,
+                            capture_output=True,
+                            text=True,
+                            timeout=5,
+                        )
+
+                        state_by_job_id: dict[str, str] = {}
+                        for item in _parse_squeue_output(proc.stdout):
+                            job_id = str(item.get("job_id", "")).strip()
+                            state = str(item.get("state", "")).strip()
+                            if job_id and state:
+                                state_by_job_id[job_id] = state
+
+                        now = utc_now_rfc3339()
+                        for record in candidates:
+                            scheduler_job_id = str(record.get("scheduler_job_id", "")).strip()
+                            record["scheduler_state"] = state_by_job_id.get(scheduler_job_id, "not_in_queue")
+                            record["last_refresh_at"] = now
+                            write_job_record(runtime_dir, record)
+                except Exception:
+                    # Best-effort only: do not fail the list endpoint for refresh failures.
+                    pass
+
         items: list[dict[str, Any]] = []
-        for path in reversed(list_job_paths(_runtime_dir())):
+        for path in reversed(list_job_paths(runtime_dir)):
             record = read_job_record_from_path(path)
             items.append(
                 {

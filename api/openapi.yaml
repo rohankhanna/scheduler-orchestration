@@ -19,6 +19,13 @@ paths:
     get:
       operationId: listJobs
       summary: List jobs tracked by the orchestration server (ledger-backed).
+      parameters:
+        - name: refresh
+          in: query
+          required: false
+          schema:
+            type: boolean
+          description: When true, query the scheduler backend for a bounded set of jobs and persist refreshed scheduler state into the ledger before returning the list.
       responses:
         '200':
           description: Jobs list.
@@ -26,6 +33,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ListJobsResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
     post:
