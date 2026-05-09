@@ -13,7 +13,13 @@ from fastapi import FastAPI, Header, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from scheduler_orchestration.direct_backend import build_direct_submission_plan
+from scheduler_orchestration.direct_backend import (
+    build_direct_submission_plan,
+    build_systemctl_cancel_direct_command,
+    build_systemd_run_direct_command,
+    direct_scope_name_from_record,
+    direct_systemd_scope_name,
+)
 from scheduler_orchestration.drain_state import is_drain_enabled, set_drain_mode
 from scheduler_orchestration.job_ledger import (
     list_job_paths,
@@ -176,55 +182,6 @@ def _cap_reconcile_job_limit(n: int) -> int:
     return n
 
 
-def _build_systemd_run_direct_command(server_job_id: str, payload_argv: list[str]) -> list[str]:
-    # Use argv list; no shell.
-    # This is the "cage": a transient systemd scope with cgroup properties applied.
-
-    slice_name = os.environ.get("SCHED_ORCH_JOBS_SLICE", "sched-orch-jobs.slice").strip()
-    allowed_cpus = os.environ.get("SCHED_ORCH_JOBS_ALLOWED_CPUS", "2-19").strip()
-    memory_high = os.environ.get("SCHED_ORCH_JOBS_MEMORY_HIGH", "108G").strip()
-    memory_max = os.environ.get("SCHED_ORCH_JOBS_MEMORY_MAX", "113G").strip()
-    cpu_weight = os.environ.get("SCHED_ORCH_JOBS_CPU_WEIGHT", "80").strip()
-    io_weight = os.environ.get("SCHED_ORCH_JOBS_IO_WEIGHT", "80").strip()
-
-    unit_name = _direct_systemd_scope_name(server_job_id)
-
-    return [
-        "systemd-run",
-        "--scope",
-        f"--unit={unit_name}",
-        "--wait",
-        "--pipe",
-        f"--slice={slice_name}",
-        f"--property=AllowedCPUs={allowed_cpus}",
-        f"--property=MemoryHigh={memory_high}",
-        f"--property=MemoryMax={memory_max}",
-        f"--property=CPUWeight={cpu_weight}",
-        f"--property=IOWeight={io_weight}",
-        "--",
-        *payload_argv,
-    ]
-
-
-def _direct_systemd_scope_name(server_job_id: str) -> str:
-    return f"sched-orch-job-{server_job_id}.scope"
-
-
-def _direct_scope_name_from_record(record: dict[str, Any]) -> str | None:
-    scope_name = record.get("direct_scope_name")
-    if isinstance(scope_name, str) and scope_name.strip():
-        return scope_name.strip()
-
-    server_job_id = str(record.get("server_job_id", "")).strip()
-    if not server_job_id:
-        return None
-    return _direct_systemd_scope_name(server_job_id)
-
-
-def _build_systemctl_cancel_direct_command(scope_name: str) -> list[str]:
-    return ["systemctl", "kill", "--kill-who=all", scope_name]
-
-
 def _direct_refresh_enabled() -> bool:
     # Refresh is an observation/control-plane query; keep it explicitly gated for direct backend.
     val = os.environ.get("SCHED_ORCH_ENABLE_DIRECT_REFRESH", "0").strip().lower()
@@ -317,7 +274,7 @@ def _refresh_slurm_records_from_squeue_list(runtime_dir: Path, records: list[dic
 
 
 def _refresh_direct_record_from_systemctl_show(runtime_dir: Path, record: dict[str, Any]) -> None:
-    scope_name = _direct_scope_name_from_record(record)
+    scope_name = direct_scope_name_from_record(record)
     if not scope_name:
         return
 
@@ -485,7 +442,7 @@ def create_app() -> FastAPI:
 
         scheduler_job_id: str | None = None
         exit_code: int | None = None
-        direct_scope_name: str | None = _direct_systemd_scope_name(server_job_id) if backend == "direct" else None
+        direct_scope_name: str | None = direct_systemd_scope_name(server_job_id) if backend == "direct" else None
         log_capture = {"stdout": False, "stderr": False}
         state = "accepted" if plan["allowed"] else "blocked"
 
@@ -495,7 +452,7 @@ def create_app() -> FastAPI:
                 # Plan should always contain an argv list for direct backend.
                 state = "failed"
             else:
-                cmd = _build_systemd_run_direct_command(server_job_id, payload_argv)
+                cmd = build_systemd_run_direct_command(server_job_id, payload_argv)
                 try:
                     proc = subprocess.run(
                         cmd,
@@ -687,7 +644,7 @@ def create_app() -> FastAPI:
             if not _direct_refresh_enabled():
                 raise HTTPException(status_code=400, detail="bad_request")
 
-            scope_name = _direct_scope_name_from_record(record)
+            scope_name = direct_scope_name_from_record(record)
             if not scope_name:
                 raise HTTPException(status_code=400, detail="bad_request")
 
@@ -758,10 +715,10 @@ def create_app() -> FastAPI:
             if not _direct_cancel_enabled():
                 raise HTTPException(status_code=400, detail="bad_request")
 
-            scope_name = _direct_scope_name_from_record(record)
+            scope_name = direct_scope_name_from_record(record)
             if not scope_name:
                 raise HTTPException(status_code=400, detail="bad_request")
-            cmd = _build_systemctl_cancel_direct_command(scope_name)
+            cmd = build_systemctl_cancel_direct_command(scope_name)
         else:
             raise HTTPException(status_code=400, detail="bad_request")
 

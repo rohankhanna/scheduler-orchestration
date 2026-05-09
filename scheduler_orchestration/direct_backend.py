@@ -1,9 +1,59 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
 from scheduler_orchestration.drain_state import is_drain_enabled
+
+
+def direct_systemd_scope_name(server_job_id: str) -> str:
+    return f"sched-orch-job-{server_job_id}.scope"
+
+
+def direct_scope_name_from_record(record: dict[str, Any]) -> str | None:
+    scope_name = record.get("direct_scope_name")
+    if isinstance(scope_name, str) and scope_name.strip():
+        return scope_name.strip()
+
+    server_job_id = str(record.get("server_job_id", "")).strip()
+    if not server_job_id:
+        return None
+    return direct_systemd_scope_name(server_job_id)
+
+
+def build_systemctl_cancel_direct_command(scope_name: str) -> list[str]:
+    return ["systemctl", "kill", "--kill-who=all", scope_name]
+
+
+def build_systemd_run_direct_command(server_job_id: str, payload_argv: list[str]) -> list[str]:
+    # Use argv list; no shell.
+    # This is the "cage": a transient systemd scope with cgroup properties applied.
+
+    slice_name = os.environ.get("SCHED_ORCH_JOBS_SLICE", "sched-orch-jobs.slice").strip()
+    allowed_cpus = os.environ.get("SCHED_ORCH_JOBS_ALLOWED_CPUS", "2-19").strip()
+    memory_high = os.environ.get("SCHED_ORCH_JOBS_MEMORY_HIGH", "108G").strip()
+    memory_max = os.environ.get("SCHED_ORCH_JOBS_MEMORY_MAX", "113G").strip()
+    cpu_weight = os.environ.get("SCHED_ORCH_JOBS_CPU_WEIGHT", "80").strip()
+    io_weight = os.environ.get("SCHED_ORCH_JOBS_IO_WEIGHT", "80").strip()
+
+    unit_name = direct_systemd_scope_name(server_job_id)
+
+    return [
+        "systemd-run",
+        "--scope",
+        f"--unit={unit_name}",
+        "--wait",
+        "--pipe",
+        f"--slice={slice_name}",
+        f"--property=AllowedCPUs={allowed_cpus}",
+        f"--property=MemoryHigh={memory_high}",
+        f"--property=MemoryMax={memory_max}",
+        f"--property=CPUWeight={cpu_weight}",
+        f"--property=IOWeight={io_weight}",
+        "--",
+        *payload_argv,
+    ]
 
 
 def direct_payload_argv_from_spec(spec: dict[str, Any]) -> list[str] | None:
