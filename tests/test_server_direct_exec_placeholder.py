@@ -62,6 +62,7 @@ def test_direct_exec_payload_uses_systemd_run_and_persists_exit_code(tmp_path, m
     # We should be using systemd-run to create a governed scope.
     assert argv[0] == "systemd-run"
     assert "--scope" in argv
+    assert f"--unit=sched-orch-job-{server_job_id}.scope" in argv
     assert "--wait" in argv
     assert "--pipe" in argv
 
@@ -72,6 +73,7 @@ def test_direct_exec_payload_uses_systemd_run_and_persists_exit_code(tmp_path, m
     job_path = tmp_path / "scheduler-job-ledger" / "jobs" / f"{server_job_id}.json"
     record = json.loads(job_path.read_text(encoding="utf-8"))
     assert record["execution_backend"] == "direct"
+    assert record["direct_scope_name"] == f"sched-orch-job-{server_job_id}.scope"
     assert record["exit_code"] == 0
     assert record["state"] in {"succeeded", "submitted"}
     assert isinstance(record["spec_sha256"], str)

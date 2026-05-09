@@ -398,6 +398,7 @@ def create_app() -> FastAPI:
 
         scheduler_job_id: str | None = None
         exit_code: int | None = None
+        direct_scope_name: str | None = _direct_systemd_scope_name(server_job_id) if backend == "direct" else None
         state = "accepted" if plan["allowed"] else "blocked"
 
         if plan["allowed"] and backend == "direct" and _direct_execution_enabled():
@@ -453,6 +454,7 @@ def create_app() -> FastAPI:
             "scheduler_job_id": scheduler_job_id,
             "exit_code": exit_code,
             "execution_backend": backend,
+            "direct_scope_name": direct_scope_name,
             "accepted": bool(plan["allowed"]),
             "reason": plan["reason"],
             "command": plan["command"],
