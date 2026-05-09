@@ -22,6 +22,7 @@ from scheduler_orchestration.job_ledger import (
     write_job_record,
 )
 from scheduler_orchestration.slurm_adapter import (
+    build_scancel_command,
     build_submission_plan,
     build_squeue_job_query_command,
     build_squeue_list_command,
@@ -337,5 +338,50 @@ def create_app() -> FastAPI:
             "scheduler_job_id": record.get("scheduler_job_id"),
             "detail": record,
         }
+
+    @app.delete("/v1/jobs/{server_job_id}")
+    def cancel_job(
+        server_job_id: str,
+        x_api_key: str | None = Header(default=None, alias="X-API-Key"),
+    ) -> dict[str, Any]:
+        _require_api_key(x_api_key)
+
+        record = read_job_record(_runtime_dir(), server_job_id)
+        if not record:
+            raise HTTPException(status_code=404, detail="not_found")
+
+        backend = record.get("execution_backend")
+        scheduler_job_id = record.get("scheduler_job_id")
+
+        # Conservative policy: cancellation is an execution/control action, so keep it gated.
+        if not _scheduler_execution_enabled():
+            raise HTTPException(status_code=400, detail="bad_request")
+
+        if backend != "slurm":
+            raise HTTPException(status_code=400, detail="bad_request")
+
+        if not isinstance(scheduler_job_id, str) or not scheduler_job_id.strip():
+            raise HTTPException(status_code=400, detail="bad_request")
+
+        cmd = build_scancel_command(scheduler_job_id)
+        try:
+            subprocess.run(
+                cmd,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except (subprocess.TimeoutExpired, subprocess.CalledProcessError, FileNotFoundError):
+            record["state"] = "failed"
+            record["cancel_failed_at"] = utc_now_rfc3339()
+            write_job_record(_runtime_dir(), record)
+            raise HTTPException(status_code=500, detail="server_error")
+
+        record["state"] = "canceled"
+        record["canceled_at"] = utc_now_rfc3339()
+        write_job_record(_runtime_dir(), record)
+
+        return {"server_job_id": server_job_id, "canceled": True}
 
     return app

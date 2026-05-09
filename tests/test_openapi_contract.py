@@ -20,6 +20,7 @@ def test_openapi_contract_exists_and_has_required_routes():
 
     assert "/v1/jobs/{job_id}" in paths
     assert "get" in paths["/v1/jobs/{job_id}"]
+    assert "delete" in paths["/v1/jobs/{job_id}"]
 
     assert "/v1/queue" in paths
     assert "get" in paths["/v1/queue"]
