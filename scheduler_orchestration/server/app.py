@@ -258,6 +258,76 @@ def _infer_direct_job_state_from_scope(record: dict[str, Any]) -> str | None:
     return None
 
 
+def _terminal_job_states() -> set[str]:
+    return {"blocked", "failed", "canceled", "succeeded"}
+
+
+def _refresh_slurm_records_from_squeue_list(runtime_dir: Path, records: list[dict[str, Any]]) -> None:
+    if not records:
+        return
+
+    cmd = build_squeue_list_command()
+    proc = subprocess.run(
+        cmd,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+
+    state_by_job_id: dict[str, str] = {}
+    for item in _parse_squeue_output(proc.stdout):
+        job_id = str(item.get("job_id", "")).strip()
+        state = str(item.get("state", "")).strip()
+        if job_id and state:
+            state_by_job_id[job_id] = state
+
+    now = utc_now_rfc3339()
+    for record in records:
+        scheduler_job_id = str(record.get("scheduler_job_id", "")).strip()
+        record["scheduler_state"] = state_by_job_id.get(scheduler_job_id, "not_in_queue")
+        record["last_refresh_at"] = now
+        write_job_record(runtime_dir, record)
+
+
+def _refresh_direct_record_from_systemctl_show(runtime_dir: Path, record: dict[str, Any]) -> None:
+    scope_name = _direct_scope_name_from_record(record)
+    if not scope_name:
+        return
+
+    cmd = [
+        "systemctl",
+        "show",
+        scope_name,
+        "--property=LoadState",
+        "--property=ActiveState",
+        "--property=SubState",
+        "--property=Result",
+        "--no-pager",
+    ]
+    proc = subprocess.run(
+        cmd,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+
+    props = _parse_systemctl_show_properties(proc.stdout)
+    record["direct_scope_load_state"] = props.get("LoadState")
+    record["direct_scope_active_state"] = props.get("ActiveState") or ("not-found" if props.get("LoadState") == "not-found" else None)
+    record["direct_scope_sub_state"] = props.get("SubState")
+    record["direct_scope_result"] = props.get("Result")
+    record["last_refresh_at"] = utc_now_rfc3339()
+
+    if _direct_state_inference_enabled():
+        inferred = _infer_direct_job_state_from_scope(record)
+        if inferred:
+            record["state"] = inferred
+
+    write_job_record(runtime_dir, record)
+
+
 def _direct_payload_argv_from_spec(spec: dict[str, Any]) -> list[str] | None:
     payload = spec.get("payload")
     if not isinstance(payload, dict):
@@ -308,7 +378,7 @@ def create_app() -> FastAPI:
             if not paths:
                 return
 
-            terminal_states = {"blocked", "failed", "canceled", "succeeded"}
+            terminal_states = _terminal_job_states()
 
             candidates: list[dict[str, Any]] = []
             for path in paths:
@@ -327,32 +397,7 @@ def create_app() -> FastAPI:
                 if len(candidates) >= max_jobs:
                     break
 
-            if not candidates:
-                return
-
-            # Single scheduler call; map job_id -> state.
-            cmd = build_squeue_list_command()
-            proc = subprocess.run(
-                cmd,
-                check=True,
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-
-            state_by_job_id: dict[str, str] = {}
-            for item in _parse_squeue_output(proc.stdout):
-                job_id = str(item.get("job_id", "")).strip()
-                state = str(item.get("state", "")).strip()
-                if job_id and state:
-                    state_by_job_id[job_id] = state
-
-            now = utc_now_rfc3339()
-            for record in candidates:
-                scheduler_job_id = str(record.get("scheduler_job_id", "")).strip()
-                record["scheduler_state"] = state_by_job_id.get(scheduler_job_id, "not_in_queue")
-                record["last_refresh_at"] = now
-                write_job_record(runtime_dir, record)
+            _refresh_slurm_records_from_squeue_list(runtime_dir, candidates)
         except Exception:
             return
 
@@ -540,7 +585,7 @@ def create_app() -> FastAPI:
                 try:
                     paths = list_job_paths(runtime_dir)
 
-                    terminal_states = {"blocked", "failed", "canceled", "succeeded"}
+                    terminal_states = _terminal_job_states()
 
                     # Refresh slurm jobs (one squeue call).
                     slurm_candidates: list[dict[str, Any]] = []
@@ -560,29 +605,7 @@ def create_app() -> FastAPI:
                         if len(slurm_candidates) >= max_jobs:
                             break
 
-                    if slurm_candidates:
-                        cmd = build_squeue_list_command()
-                        proc = subprocess.run(
-                            cmd,
-                            check=True,
-                            capture_output=True,
-                            text=True,
-                            timeout=5,
-                        )
-
-                        state_by_job_id: dict[str, str] = {}
-                        for item in _parse_squeue_output(proc.stdout):
-                            job_id = str(item.get("job_id", "")).strip()
-                            state = str(item.get("state", "")).strip()
-                            if job_id and state:
-                                state_by_job_id[job_id] = state
-
-                        now = utc_now_rfc3339()
-                        for record in slurm_candidates:
-                            scheduler_job_id = str(record.get("scheduler_job_id", "")).strip()
-                            record["scheduler_state"] = state_by_job_id.get(scheduler_job_id, "not_in_queue")
-                            record["last_refresh_at"] = now
-                            write_job_record(runtime_dir, record)
+                    _refresh_slurm_records_from_squeue_list(runtime_dir, slurm_candidates)
 
                     # Refresh direct jobs (bounded; one systemctl call per job).
                     if _direct_refresh_enabled():
@@ -600,48 +623,10 @@ def create_app() -> FastAPI:
                                 break
 
                         for record in direct_candidates:
-                            server_job_id = str(record.get("server_job_id", "")).strip()
-                            if not server_job_id:
-                                continue
-
-                            scope_name = _direct_scope_name_from_record(record)
-                            if not scope_name:
-                                continue
-
-                            cmd = [
-                                "systemctl",
-                                "show",
-                                scope_name,
-                                "--property=LoadState",
-                                "--property=ActiveState",
-                                "--property=SubState",
-                                "--property=Result",
-                                "--no-pager",
-                            ]
                             try:
-                                proc = subprocess.run(
-                                    cmd,
-                                    check=False,
-                                    capture_output=True,
-                                    text=True,
-                                    timeout=5,
-                                )
+                                _refresh_direct_record_from_systemctl_show(runtime_dir, record)
                             except (subprocess.TimeoutExpired, FileNotFoundError):
                                 continue
-
-                            props = _parse_systemctl_show_properties(proc.stdout)
-                            record["direct_scope_load_state"] = props.get("LoadState")
-                            record["direct_scope_active_state"] = props.get("ActiveState") or ("not-found" if props.get("LoadState") == "not-found" else None)
-                            record["direct_scope_sub_state"] = props.get("SubState")
-                            record["direct_scope_result"] = props.get("Result")
-                            record["last_refresh_at"] = utc_now_rfc3339()
-
-                            if _direct_state_inference_enabled():
-                                inferred = _infer_direct_job_state_from_scope(record)
-                                if inferred:
-                                    record["state"] = inferred
-
-                            write_job_record(runtime_dir, record)
                 except Exception:
                     # Best-effort only: do not fail the list endpoint for refresh failures.
                     pass
@@ -709,41 +694,11 @@ def create_app() -> FastAPI:
             if not scope_name:
                 raise HTTPException(status_code=400, detail="bad_request")
 
-            cmd = [
-                "systemctl",
-                "show",
-                scope_name,
-                "--property=LoadState",
-                "--property=ActiveState",
-                "--property=SubState",
-                "--property=Result",
-                "--no-pager",
-            ]
             try:
-                proc = subprocess.run(
-                    cmd,
-                    check=False,
-                    capture_output=True,
-                    text=True,
-                    timeout=5,
-                )
+                _refresh_direct_record_from_systemctl_show(_runtime_dir(), record)
             except (subprocess.TimeoutExpired, FileNotFoundError):
                 # Best-effort; do not fail the request for observation errors.
                 pass
-            else:
-                props = _parse_systemctl_show_properties(proc.stdout)
-                record["direct_scope_load_state"] = props.get("LoadState")
-                record["direct_scope_active_state"] = props.get("ActiveState") or ("not-found" if props.get("LoadState") == "not-found" else None)
-                record["direct_scope_sub_state"] = props.get("SubState")
-                record["direct_scope_result"] = props.get("Result")
-                record["last_refresh_at"] = utc_now_rfc3339()
-
-                if _direct_state_inference_enabled():
-                    inferred = _infer_direct_job_state_from_scope(record)
-                    if inferred:
-                        record["state"] = inferred
-
-                write_job_record(_runtime_dir(), record)
 
         return {
             "server_job_id": record.get("server_job_id", server_job_id),
