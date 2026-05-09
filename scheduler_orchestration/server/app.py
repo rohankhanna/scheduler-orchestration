@@ -98,6 +98,25 @@ def _execution_backend() -> str:
     return os.environ.get("SCHED_ORCH_EXECUTION_BACKEND", "slurm").strip().lower()
 
 
+def _startup_reconcile_enabled() -> bool:
+    # Safety default: do not run any startup reconciliation unless explicitly enabled.
+    val = os.environ.get("SCHED_ORCH_ENABLE_STARTUP_RECONCILE", "0").strip().lower()
+    return val in {"1", "true", "yes", "on"}
+
+
+def _startup_reconcile_max_jobs() -> int:
+    raw = os.environ.get("SCHED_ORCH_STARTUP_RECONCILE_MAX_JOBS", "50").strip()
+    try:
+        n = int(raw)
+    except ValueError:
+        return 50
+    if n < 0:
+        return 0
+    if n > 1000:
+        return 1000
+    return n
+
+
 def _build_systemd_run_direct_placeholder_command() -> list[str]:
     # Conservative rollout: placeholder payload only.
     # Use argv list; no shell.
@@ -131,6 +150,70 @@ def create_app() -> FastAPI:
         raise RuntimeError("Missing required environment variable: SCHED_ORCH_API_KEY")
 
     app = FastAPI(title="scheduler-orchestration", version="0.1.0")
+
+    @app.on_event("startup")
+    def _startup_reconcile_ledger() -> None:
+        if not _startup_reconcile_enabled():
+            return
+
+        max_jobs = _startup_reconcile_max_jobs()
+        if max_jobs <= 0:
+            return
+
+        # Best-effort reconciliation only: never fail server startup due to scheduler/tooling issues.
+        try:
+            runtime_dir = _runtime_dir()
+            paths = list_job_paths(runtime_dir)
+            if not paths:
+                return
+
+            terminal_states = {"blocked", "failed", "canceled", "succeeded"}
+
+            candidates: list[dict[str, Any]] = []
+            for path in paths:
+                record = read_job_record_from_path(path)
+                if record.get("execution_backend") != "slurm":
+                    continue
+
+                scheduler_job_id = record.get("scheduler_job_id")
+                if not isinstance(scheduler_job_id, str) or not scheduler_job_id.strip():
+                    continue
+
+                if record.get("state") in terminal_states:
+                    continue
+
+                candidates.append(record)
+                if len(candidates) >= max_jobs:
+                    break
+
+            if not candidates:
+                return
+
+            # Single scheduler call; map job_id -> state.
+            cmd = build_squeue_list_command()
+            proc = subprocess.run(
+                cmd,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+
+            state_by_job_id: dict[str, str] = {}
+            for item in _parse_squeue_output(proc.stdout):
+                job_id = str(item.get("job_id", "")).strip()
+                state = str(item.get("state", "")).strip()
+                if job_id and state:
+                    state_by_job_id[job_id] = state
+
+            now = utc_now_rfc3339()
+            for record in candidates:
+                scheduler_job_id = str(record.get("scheduler_job_id", "")).strip()
+                record["scheduler_state"] = state_by_job_id.get(scheduler_job_id, "not_in_queue")
+                record["last_refresh_at"] = now
+                write_job_record(runtime_dir, record)
+        except Exception:
+            return
 
     def _error_code_for_http(status_code: int) -> str:
         if status_code == 400:
