@@ -13,6 +13,7 @@ from fastapi import FastAPI, Header, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from scheduler_orchestration.direct_backend import build_direct_submission_plan
 from scheduler_orchestration.drain_state import is_drain_enabled, set_drain_mode
 from scheduler_orchestration.job_ledger import (
     list_job_paths,
@@ -353,36 +354,6 @@ def _refresh_direct_record_from_systemctl_show(runtime_dir: Path, record: dict[s
     write_job_record(runtime_dir, record)
 
 
-def _direct_payload_argv_from_spec(spec: dict[str, Any]) -> list[str] | None:
-    payload = spec.get("payload")
-    if not isinstance(payload, dict):
-        return None
-
-    argv = payload.get("argv")
-    if not isinstance(argv, list) or not argv:
-        return None
-
-    out: list[str] = []
-    for item in argv:
-        if not isinstance(item, str):
-            return None
-        s = item.strip()
-        if not s:
-            return None
-        if "\x00" in s:
-            return None
-        out.append(s)
-
-    if not out:
-        return None
-
-    # Basic sanity limit to avoid pathological request sizes.
-    if len(out) > 64:
-        return None
-
-    return out
-
-
 def create_app() -> FastAPI:
     # Fail closed: do not create an app without an explicit API key.
     if not os.environ.get("SCHED_ORCH_API_KEY"):
@@ -501,15 +472,11 @@ def create_app() -> FastAPI:
         # - slurm: existing sbatch-based plan builder
         # - direct: systemd-run scoped execution (payload can be gated)
         if backend == "direct":
-            if is_drain_enabled(_drain_state_path()):
-                plan = {"allowed": False, "reason": "drain_enabled", "command": None}
-            else:
-                payload_argv = _direct_payload_argv_from_spec(spec)
-                if payload_argv and _direct_payload_execution_enabled():
-                    plan = {"allowed": True, "reason": "ok", "command": payload_argv}
-                else:
-                    # Conservative rollout: placeholder until payload execution is explicitly enabled.
-                    plan = {"allowed": True, "reason": "ok", "command": ["true"]}
+            plan = build_direct_submission_plan(
+                spec,
+                _drain_state_path(),
+                payload_execution_enabled=_direct_payload_execution_enabled(),
+            )
         else:
             plan = build_submission_plan(spec, drain_state_path=_drain_state_path())
 
