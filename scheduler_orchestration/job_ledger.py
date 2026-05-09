@@ -70,3 +70,14 @@ def write_job_record(runtime_dir: Path, record: dict[str, Any]) -> None:
     if not server_job_id:
         raise ValueError("record missing server_job_id")
     atomic_write_private_json(job_path(runtime_dir, server_job_id), record)
+
+
+def list_job_paths(runtime_dir: Path) -> list[Path]:
+    root = jobs_dir(runtime_dir)
+    if not root.exists():
+        return []
+    return sorted(root.glob("*.json"))
+
+
+def read_job_record_from_path(path: Path) -> dict[str, Any]:
+    return json.loads(path.read_text(encoding="utf-8"))

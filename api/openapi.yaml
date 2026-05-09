@@ -16,6 +16,18 @@ security:
   - ApiKeyAuth: []
 paths:
   /v1/jobs:
+    get:
+      operationId: listJobs
+      summary: List jobs tracked by the orchestration server (ledger-backed).
+      responses:
+        '200':
+          description: Jobs list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListJobsResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
     post:
       operationId: submitJob
       summary: Submit a job specification for scheduler admission.
@@ -125,6 +137,51 @@ components:
       properties:
         spec:
           $ref: '#/components/schemas/SchedulerJobSpec'
+    ListJobsResponse:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/JobListItem'
+    JobListItem:
+      type: object
+      additionalProperties: false
+      required: [server_job_id, state]
+      properties:
+        server_job_id: { type: string }
+        created_at:
+          anyOf:
+            - type: string
+              format: date-time
+            - type: 'null'
+        state: { type: string }
+        scheduler_job_id:
+          anyOf:
+            - type: string
+            - type: 'null'
+        execution_backend:
+          anyOf:
+            - type: string
+            - type: 'null'
+        accepted:
+          anyOf:
+            - type: boolean
+            - type: 'null'
+        reason:
+          anyOf:
+            - type: string
+            - type: 'null'
+        spec_sha256:
+          anyOf:
+            - type: string
+            - type: 'null'
+        job_name:
+          anyOf:
+            - type: string
+            - type: 'null'
     SubmitJobResponse:
       type: object
       additionalProperties: false

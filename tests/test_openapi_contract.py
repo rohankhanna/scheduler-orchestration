@@ -16,6 +16,7 @@ def test_openapi_contract_exists_and_has_required_routes():
     paths = spec["paths"]
     assert "/v1/jobs" in paths
     assert "post" in paths["/v1/jobs"]
+    assert "get" in paths["/v1/jobs"]
 
     assert "/v1/jobs/{job_id}" in paths
     assert "get" in paths["/v1/jobs/{job_id}"]

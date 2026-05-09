@@ -14,7 +14,9 @@ from fastapi.responses import JSONResponse
 
 from scheduler_orchestration.drain_state import is_drain_enabled, set_drain_mode
 from scheduler_orchestration.job_ledger import (
+    list_job_paths,
     read_job_record,
+    read_job_record_from_path,
     spec_sha256,
     utc_now_rfc3339,
     write_job_record,
@@ -275,6 +277,29 @@ def create_app() -> FastAPI:
             "reason": plan["reason"],
             "command": plan["command"],
         }
+
+    @app.get("/v1/jobs")
+    def list_jobs(x_api_key: str | None = Header(default=None, alias="X-API-Key")) -> dict[str, Any]:
+        _require_api_key(x_api_key)
+
+        items: list[dict[str, Any]] = []
+        for path in reversed(list_job_paths(_runtime_dir())):
+            record = read_job_record_from_path(path)
+            items.append(
+                {
+                    "server_job_id": record.get("server_job_id"),
+                    "created_at": record.get("created_at"),
+                    "state": record.get("state", "unknown"),
+                    "scheduler_job_id": record.get("scheduler_job_id"),
+                    "execution_backend": record.get("execution_backend"),
+                    "accepted": record.get("accepted"),
+                    "reason": record.get("reason"),
+                    "spec_sha256": record.get("spec_sha256"),
+                    "job_name": (record.get("spec") or {}).get("job_name") if isinstance(record.get("spec"), dict) else None,
+                }
+            )
+
+        return {"items": items}
 
     @app.get("/v1/jobs/{server_job_id}")
     def get_job(
