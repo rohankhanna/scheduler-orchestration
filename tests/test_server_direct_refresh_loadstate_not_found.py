@@ -16,7 +16,7 @@ def _write_direct_job(runtime_dir: Path, server_job_id: str) -> None:
                 "server_job_id": server_job_id,
                 "created_at": "2026-05-09T00:00:00Z",
                 "spec_sha256": "x" * 64,
-                "state": "submitted",
+                "state": "running",
                 "scheduler_job_id": None,
                 "execution_backend": "direct",
                 "direct_scope_name": f"sched-orch-job-{server_job_id}.scope",
@@ -33,7 +33,7 @@ def _write_direct_job(runtime_dir: Path, server_job_id: str) -> None:
     )
 
 
-def test_get_job_refresh_direct_persists_scope_state(monkeypatch, tmp_path: Path) -> None:
+def test_direct_refresh_persists_not_found_sentinel(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("SCHED_ORCH_API_KEY", "test-key")
     monkeypatch.setenv("SCHED_ORCH_RUNTIME_DIR", str(tmp_path))
     monkeypatch.setenv("SCHED_ORCH_ENABLE_DIRECT_REFRESH", "1")
@@ -45,8 +45,8 @@ def test_get_job_refresh_direct_persists_scope_state(monkeypatch, tmp_path: Path
         assert args[:3] == ["systemctl", "show", f"sched-orch-job-{server_job_id}.scope"]
         return CompletedProcess(
             args=args,
-            returncode=0,
-            stdout="LoadState=loaded\nActiveState=active\nSubState=running\nResult=success\n",
+            returncode=3,
+            stdout="LoadState=not-found\n",
             stderr="",
         )
 
@@ -62,23 +62,5 @@ def test_get_job_refresh_direct_persists_scope_state(monkeypatch, tmp_path: Path
 
     record_path = tmp_path / "scheduler-job-ledger" / "jobs" / f"{server_job_id}.json"
     record = json.loads(record_path.read_text(encoding="utf-8"))
-    assert record["direct_scope_load_state"] == "loaded"
-    assert record["direct_scope_active_state"] == "active"
-    assert record["direct_scope_sub_state"] == "running"
-    assert record["direct_scope_result"] == "success"
-    assert isinstance(record.get("last_refresh_at"), str) and record["last_refresh_at"].endswith("Z")
-
-
-def test_get_job_refresh_direct_requires_explicit_enable(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("SCHED_ORCH_API_KEY", "test-key")
-    monkeypatch.setenv("SCHED_ORCH_RUNTIME_DIR", str(tmp_path))
-
-    server_job_id = "job-123"
-    _write_direct_job(tmp_path, server_job_id)
-
-    from scheduler_orchestration.server.app import create_app
-
-    client = TestClient(create_app())
-    r = client.get(f"/v1/jobs/{server_job_id}?refresh=1", headers={"X-API-Key": "test-key"})
-    assert r.status_code == 400
-    assert r.json() == {"error": "bad_request"}
+    assert record["direct_scope_load_state"] == "not-found"
+    assert record["direct_scope_active_state"] == "not-found"

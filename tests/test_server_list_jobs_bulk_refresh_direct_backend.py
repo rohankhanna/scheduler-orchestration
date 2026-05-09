@@ -50,7 +50,7 @@ def test_list_jobs_refresh_direct_persists_scope_state_when_enabled(monkeypatch,
         return subprocess.CompletedProcess(
             args=cmd,
             returncode=0,
-            stdout="ActiveState=active\nSubState=running\n",
+            stdout="LoadState=loaded\nActiveState=active\nSubState=running\nResult=success\n",
             stderr="",
         )
 
@@ -65,8 +65,10 @@ def test_list_jobs_refresh_direct_persists_scope_state_when_enabled(monkeypatch,
     rec = json.loads(
         (tmp_path / "scheduler-job-ledger" / "jobs" / f"{server_job_id}.json").read_text(encoding="utf-8")
     )
+    assert rec["direct_scope_load_state"] == "loaded"
     assert rec["direct_scope_active_state"] == "active"
     assert rec["direct_scope_sub_state"] == "running"
+    assert rec["direct_scope_result"] == "success"
     assert isinstance(rec.get("last_refresh_at"), str) and rec["last_refresh_at"].endswith("Z")
 
 

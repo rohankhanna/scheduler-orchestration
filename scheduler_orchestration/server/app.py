@@ -227,9 +227,13 @@ def _parse_systemctl_show_properties(stdout: str) -> dict[str, str]:
 
 def _infer_direct_job_state_from_scope(record: dict[str, Any]) -> str | None:
     # Only infer terminal state when systemd says the unit is not active anymore.
+    load = str(record.get("direct_scope_load_state") or "").strip().lower()
     active = str(record.get("direct_scope_active_state") or "").strip().lower()
     sub = str(record.get("direct_scope_sub_state") or "").strip().lower()
     result = str(record.get("direct_scope_result") or "").strip().lower()
+
+    if load in {"not-found", "masked"}:
+        return "unknown"
 
     if active in {"active", "activating", "reloading"}:
         return "running"
@@ -608,6 +612,7 @@ def create_app() -> FastAPI:
                                 "systemctl",
                                 "show",
                                 scope_name,
+                                "--property=LoadState",
                                 "--property=ActiveState",
                                 "--property=SubState",
                                 "--property=Result",
@@ -616,16 +621,17 @@ def create_app() -> FastAPI:
                             try:
                                 proc = subprocess.run(
                                     cmd,
-                                    check=True,
+                                    check=False,
                                     capture_output=True,
                                     text=True,
                                     timeout=5,
                                 )
-                            except (subprocess.TimeoutExpired, subprocess.CalledProcessError, FileNotFoundError):
+                            except (subprocess.TimeoutExpired, FileNotFoundError):
                                 continue
 
                             props = _parse_systemctl_show_properties(proc.stdout)
-                            record["direct_scope_active_state"] = props.get("ActiveState")
+                            record["direct_scope_load_state"] = props.get("LoadState")
+                            record["direct_scope_active_state"] = props.get("ActiveState") or ("not-found" if props.get("LoadState") == "not-found" else None)
                             record["direct_scope_sub_state"] = props.get("SubState")
                             record["direct_scope_result"] = props.get("Result")
                             record["last_refresh_at"] = utc_now_rfc3339()
@@ -707,6 +713,7 @@ def create_app() -> FastAPI:
                 "systemctl",
                 "show",
                 scope_name,
+                "--property=LoadState",
                 "--property=ActiveState",
                 "--property=SubState",
                 "--property=Result",
@@ -715,17 +722,18 @@ def create_app() -> FastAPI:
             try:
                 proc = subprocess.run(
                     cmd,
-                    check=True,
+                    check=False,
                     capture_output=True,
                     text=True,
                     timeout=5,
                 )
-            except (subprocess.TimeoutExpired, subprocess.CalledProcessError, FileNotFoundError):
+            except (subprocess.TimeoutExpired, FileNotFoundError):
                 # Best-effort; do not fail the request for observation errors.
                 pass
             else:
                 props = _parse_systemctl_show_properties(proc.stdout)
-                record["direct_scope_active_state"] = props.get("ActiveState")
+                record["direct_scope_load_state"] = props.get("LoadState")
+                record["direct_scope_active_state"] = props.get("ActiveState") or ("not-found" if props.get("LoadState") == "not-found" else None)
                 record["direct_scope_sub_state"] = props.get("SubState")
                 record["direct_scope_result"] = props.get("Result")
                 record["last_refresh_at"] = utc_now_rfc3339()
