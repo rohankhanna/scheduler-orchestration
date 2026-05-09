@@ -19,7 +19,8 @@ def test_get_job_with_scheduler_job_id_queries_squeue_and_updates_detail(tmp_pat
         json.dumps(
             {
                 "server_job_id": server_job_id,
-                "created_at": "2026-01-01T00:00:00+00:00",
+                "created_at": "2026-01-01T00:00:00Z",
+                "spec_sha256": "example",
                 "state": "submitted",
                 "scheduler_job_id": "9001",
                 "accepted": True,

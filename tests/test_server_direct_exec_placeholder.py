@@ -72,3 +72,5 @@ def test_direct_exec_placeholder_uses_systemd_run_and_persists_exit_code(tmp_pat
     assert record["execution_backend"] == "direct"
     assert record["exit_code"] == 0
     assert record["state"] in {"succeeded", "submitted"}
+    assert isinstance(record["spec_sha256"], str)
+    assert len(record["spec_sha256"]) == 64

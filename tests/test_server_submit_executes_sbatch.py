@@ -70,3 +70,5 @@ def test_submit_job_executes_sbatch_and_persists_scheduler_job_id(tmp_path, monk
     record = json.loads(job_path.read_text(encoding="utf-8"))
     assert record["scheduler_job_id"] == "9001"
     assert record["state"] == "submitted"
+    assert isinstance(record["spec_sha256"], str)
+    assert len(record["spec_sha256"]) == 64

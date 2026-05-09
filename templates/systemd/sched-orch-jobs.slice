@@ -1,0 +1,20 @@
+# Copy to: /etc/systemd/system/sched-orch-jobs.slice
+# Then: systemctl daemon-reload
+# Then: systemctl start sched-orch-jobs.slice
+
+[Unit]
+Description=Scheduler orchestration workload envelope (jobs)
+
+[Slice]
+# Phase 1 (soft governance): uncomment weights and MemoryHigh first.
+CPUWeight=80
+IOWeight=80
+MemoryHigh=108G
+
+# Phase 2 (CPU reservation): reserve CPUs 0-1 for interactivity.
+AllowedCPUs=2-19
+
+# Phase 3 (hard memory ceiling): keep an interactive reserve.
+MemoryMax=113G
+
+# Note: optional Phase 4 io.max caps are set via /sys/fs/cgroup/.../io.max

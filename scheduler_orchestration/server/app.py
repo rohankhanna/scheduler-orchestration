@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 import hmac
-import json
 import os
 import re
 import subprocess
 import uuid
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +13,12 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from scheduler_orchestration.drain_state import is_drain_enabled, set_drain_mode
+from scheduler_orchestration.job_ledger import (
+    read_job_record,
+    spec_sha256,
+    utc_now_rfc3339,
+    write_job_record,
+)
 from scheduler_orchestration.slurm_adapter import (
     build_submission_plan,
     build_squeue_job_query_command,
@@ -28,25 +32,6 @@ def _runtime_dir() -> Path:
 
 def _drain_state_path() -> Path:
     return _runtime_dir() / "operator" / "drain_state.json"
-
-
-def _jobs_dir() -> Path:
-    return _runtime_dir() / "scheduler-job-ledger" / "jobs"
-
-
-def _job_path(server_job_id: str) -> Path:
-    return _jobs_dir() / f"{server_job_id}.json"
-
-
-def _write_private_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    # Best-effort private permissions; respect umask, then tighten.
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    try:
-        os.chmod(path, 0o600)
-    except PermissionError:
-        # If chmod is blocked by filesystem policy, keep going.
-        pass
 
 
 def _require_api_key(x_api_key: str | None) -> None:
@@ -219,7 +204,8 @@ def create_app() -> FastAPI:
         else:
             plan = build_submission_plan(spec, drain_state_path=_drain_state_path())
 
-        created_at = datetime.now(timezone.utc).isoformat()
+        created_at = utc_now_rfc3339()
+        spec_hash = spec_sha256(spec)
 
         scheduler_job_id: str | None = None
         exit_code: int | None = None
@@ -268,6 +254,7 @@ def create_app() -> FastAPI:
         record = {
             "server_job_id": server_job_id,
             "created_at": created_at,
+            "spec_sha256": spec_hash,
             "state": state,
             "scheduler_job_id": scheduler_job_id,
             "exit_code": exit_code,
@@ -277,7 +264,7 @@ def create_app() -> FastAPI:
             "command": plan["command"],
             "spec": spec,
         }
-        _write_private_json(_job_path(server_job_id), record)
+        write_job_record(_runtime_dir(), record)
 
         if plan["allowed"] and backend != "direct" and _scheduler_execution_enabled() and state != "submitted":
             raise HTTPException(status_code=500, detail="server_error")
@@ -296,11 +283,9 @@ def create_app() -> FastAPI:
     ) -> dict[str, Any]:
         _require_api_key(x_api_key)
 
-        path = _job_path(server_job_id)
-        if not path.exists():
+        record = read_job_record(_runtime_dir(), server_job_id)
+        if not record:
             raise HTTPException(status_code=404, detail="not_found")
-
-        record = json.loads(path.read_text(encoding="utf-8"))
 
         scheduler_job_id = record.get("scheduler_job_id")
         if isinstance(scheduler_job_id, str) and scheduler_job_id.strip():
