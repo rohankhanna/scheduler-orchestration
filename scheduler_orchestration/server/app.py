@@ -5,6 +5,7 @@ import os
 import re
 import subprocess
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -168,10 +169,7 @@ def create_app() -> FastAPI:
     if not os.environ.get("SCHED_ORCH_API_KEY"):
         raise RuntimeError("Missing required environment variable: SCHED_ORCH_API_KEY")
 
-    app = FastAPI(title="scheduler-orchestration", version="0.1.0")
-
-    @app.on_event("startup")
-    def _startup_reconcile_ledger() -> None:
+    def _startup_reconcile_ledger_best_effort() -> None:
         if not _startup_reconcile_enabled():
             return
 
@@ -233,6 +231,13 @@ def create_app() -> FastAPI:
                 write_job_record(runtime_dir, record)
         except Exception:
             return
+
+    @asynccontextmanager
+    async def _lifespan(app: FastAPI):
+        _startup_reconcile_ledger_best_effort()
+        yield
+
+    app = FastAPI(title="scheduler-orchestration", version="0.1.0", lifespan=_lifespan)
 
     def _error_code_for_http(status_code: int) -> str:
         if status_code == 400:
