@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/scheduler-orchestration/schemas/scheduler_job_spec.schema.json",
+  "title": "SchedulerJobSpec",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "job_name",
+    "workflow_preset",
+    "device_preference",
+    "resources",
+    "dependencies",
+    "environment_overrides",
+    "artifacts_root",
+    "retry_policy",
+    "drain_behavior"
+  ],
+  "properties": {
+    "job_name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "workflow_preset": {
+      "type": "string",
+      "minLength": 1
+    },
+    "device_preference": {
+      "type": "string",
+      "enum": ["gpu", "cpu", "auto"]
+    },
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "graphics_processing_units",
+        "central_processing_unit_cores",
+        "memory_gibibytes"
+      ],
+      "properties": {
+        "graphics_processing_units": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "central_processing_unit_cores": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "memory_gibibytes": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "dependencies": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["parents", "policy"],
+      "properties": {
+        "parents": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "default": []
+        },
+        "policy": {
+          "type": "string",
+          "enum": ["afterok", "afterany"]
+        }
+      }
+    },
+    "environment_overrides": {
+      "type": "object",
+      "additionalProperties": { "type": "string" },
+      "default": {}
+    },
+    "artifacts_root": {
+      "type": "string",
+      "minLength": 1
+    },
+    "retry_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_attempts"],
+      "properties": {
+        "max_attempts": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "drain_behavior": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["honor_drain"],
+      "properties": {
+        "honor_drain": { "type": "boolean" }
+      }
+    }
+  }
+}

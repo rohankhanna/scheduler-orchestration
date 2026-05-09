@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>scheduler-orchestration: architecture</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <style>
+    :root{
+      --bg:#020617;         /* slate-950 */
+      --panel:#0b1220;
+      --panel2:#0f172a;
+      --grid:#1e293b;
+      --text:#e2e8f0;
+      --muted:#94a3b8;
+      --cyan:#22d3ee;
+      --emerald:#34d399;
+      --violet:#a78bfa;
+      --orange:#fb923c;
+      --slate:#94a3b8;
+      --rose:#fb7185;
+      --amber:#fbbf24;
+    }
+    *{box-sizing:border-box;}
+    body{
+      margin:0;
+      font-family:"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      background:var(--bg);
+      color:var(--text);
+    }
+    .wrap{max-width:1100px;margin:32px auto;padding:0 18px;}
+    .header{display:flex;align-items:center;gap:12px;margin-bottom:14px;}
+    .dot{width:10px;height:10px;border-radius:999px;background:var(--emerald);box-shadow:0 0 0 0 rgba(52,211,153,.55);animation:pulse 2s infinite;}
+    @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(52,211,153,.55);}70%{box-shadow:0 0 0 12px rgba(52,211,153,0);}100%{box-shadow:0 0 0 0 rgba(52,211,153,0);}}
+    h1{font-size:18px;margin:0;letter-spacing:.2px;}
+    .subtitle{margin:0 0 18px 0;color:var(--muted);font-size:12px;}
+    .card{background:linear-gradient(180deg, rgba(15,23,42,.65), rgba(2,6,23,.75));border:1px solid rgba(148,163,184,.18);border-radius:14px;padding:16px;}
+    .diagram-card{padding:16px;}
+    .footer{margin-top:14px;color:var(--muted);font-size:11px;}
+    .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:14px;}
+    .mini h3{margin:0 0 8px 0;font-size:12px;}
+    .mini ul{margin:0;padding-left:16px;color:var(--muted);font-size:11px;}
+    .mini li{margin:6px 0;}
+    @media (max-width: 900px){.grid3{grid-template-columns:1fr;}}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="header">
+      <div class="dot"></div>
+      <h1>scheduler-orchestration: architecture (iteration 1)</h1>
+    </div>
+    <p class="subtitle">Thin integration layer: job contract + scheduler adapter + operator controls (no scheduler core; no host mutation here).</p>
+
+    <div class="card diagram-card">
+      <svg width="100%" viewBox="0 0 1040 520" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+            <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1e293b" stroke-width="0.6"/>
+          </pattern>
+          <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+            <path d="M0,0 L10,3 L0,6 Z" fill="#94a3b8"/>
+          </marker>
+          <marker id="arrow-cyan" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+            <path d="M0,0 L10,3 L0,6 Z" fill="#22d3ee"/>
+          </marker>
+          <marker id="arrow-emerald" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+            <path d="M0,0 L10,3 L0,6 Z" fill="#34d399"/>
+          </marker>
+        </defs>
+
+        <!-- background -->
+        <rect x="0" y="0" width="1040" height="520" fill="url(#grid)" />
+
+        <!-- arrows first (behind boxes) -->
+        <path d="M 270 120 C 330 120, 330 120, 390 120" stroke="#94a3b8" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+        <path d="M 640 120 C 705 120, 705 120, 770 120" stroke="#94a3b8" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+        <path d="M 520 170 C 520 235, 520 235, 520 300" stroke="#22d3ee" stroke-width="2" fill="none" marker-end="url(#arrow-cyan)"/>
+        <path d="M 520 360 C 520 410, 520 410, 520 460" stroke="#94a3b8" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+
+        <path d="M 270 360 C 330 360, 330 360, 390 360" stroke="#34d399" stroke-width="2" fill="none" marker-end="url(#arrow-emerald)"/>
+        <path d="M 640 360 C 705 360, 705 360, 770 360" stroke="#34d399" stroke-width="2" fill="none" marker-end="url(#arrow-emerald)"/>
+
+        <!-- boxes -->
+        <!-- Frontend / operator -->
+        <rect x="60" y="80" width="210" height="80" rx="10" fill="#0f172a"/>
+        <rect x="60" y="80" width="210" height="80" rx="10" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1.6"/>
+        <text x="78" y="110" fill="#e2e8f0" font-size="13" font-weight="600">Operator CLI</text>
+        <text x="78" y="132" fill="#94a3b8" font-size="10">submit / status / queue</text>
+        <text x="78" y="148" fill="#94a3b8" font-size="10">drain / resume</text>
+
+        <!-- Adapter -->
+        <rect x="390" y="80" width="250" height="80" rx="10" fill="#0f172a"/>
+        <rect x="390" y="80" width="250" height="80" rx="10" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.6"/>
+        <text x="410" y="110" fill="#e2e8f0" font-size="13" font-weight="600">Scheduler adapter</text>
+        <text x="410" y="132" fill="#94a3b8" font-size="10">dry-run capable</text>
+        <text x="410" y="148" fill="#94a3b8" font-size="10">CLI or slurmrestd</text>
+
+        <!-- Slurm -->
+        <rect x="770" y="80" width="210" height="80" rx="10" fill="#0f172a"/>
+        <rect x="770" y="80" width="210" height="80" rx="10" fill="rgba(120, 53, 15, 0.3)" stroke="#fbbf24" stroke-width="1.6"/>
+        <text x="790" y="110" fill="#e2e8f0" font-size="13" font-weight="600">Slurm (single host)</text>
+        <text x="790" y="132" fill="#94a3b8" font-size="10">queued waiting</text>
+        <text x="790" y="148" fill="#94a3b8" font-size="10">dependencies + drain</text>
+
+        <!-- Contract -->
+        <rect x="355" y="300" width="330" height="80" rx="10" fill="#0f172a"/>
+        <rect x="355" y="300" width="330" height="80" rx="10" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1.6"/>
+        <text x="375" y="330" fill="#e2e8f0" font-size="13" font-weight="600">Job contract (schema)</text>
+        <text x="375" y="352" fill="#94a3b8" font-size="10">resources + dependencies + drain</text>
+        <text x="375" y="368" fill="#94a3b8" font-size="10">workflow preset + env overrides</text>
+
+        <!-- Ledger -->
+        <rect x="60" y="320" width="210" height="80" rx="10" fill="#0f172a"/>
+        <rect x="60" y="320" width="210" height="80" rx="10" fill="rgba(30, 41, 59, 0.5)" stroke="#94a3b8" stroke-width="1.6"/>
+        <text x="78" y="350" fill="#e2e8f0" font-size="13" font-weight="600">Run ledger (durable)</text>
+        <text x="78" y="372" fill="#94a3b8" font-size="10">spec hash + job id</text>
+        <text x="78" y="388" fill="#94a3b8" font-size="10">recovery after reboot</text>
+
+        <!-- Payload wrapper -->
+        <rect x="770" y="320" width="210" height="80" rx="10" fill="#0f172a"/>
+        <rect x="770" y="320" width="210" height="80" rx="10" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.6"/>
+        <text x="790" y="350" fill="#e2e8f0" font-size="13" font-weight="600">Payload wrapper</text>
+        <text x="790" y="372" fill="#94a3b8" font-size="10">existing scripts</text>
+        <text x="790" y="388" fill="#94a3b8" font-size="10">machine-readable summary</text>
+
+        <!-- Artifacts -->
+        <rect x="355" y="440" width="330" height="60" rx="10" fill="#0f172a"/>
+        <rect x="355" y="440" width="330" height="60" rx="10" fill="rgba(30, 41, 59, 0.5)" stroke="#94a3b8" stroke-width="1.6"/>
+        <text x="375" y="468" fill="#e2e8f0" font-size="13" font-weight="600">Artifacts root</text>
+        <text x="375" y="488" fill="#94a3b8" font-size="10">outputs, logs, metrics</text>
+
+        <!-- legend -->
+        <rect x="60" y="440" width="260" height="60" rx="10" fill="#0f172a" stroke="rgba(148,163,184,.18)"/>
+        <circle cx="78" cy="462" r="5" fill="#22d3ee"/><text x="92" y="466" fill="#94a3b8" font-size="10">operator surface</text>
+        <circle cx="78" cy="482" r="5" fill="#34d399"/><text x="92" y="486" fill="#94a3b8" font-size="10">integration / adapter</text>
+        <circle cx="210" cy="462" r="5" fill="#a78bfa"/><text x="224" y="466" fill="#94a3b8" font-size="10">contract</text>
+        <circle cx="210" cy="482" r="5" fill="#fbbf24"/><text x="224" y="486" fill="#94a3b8" font-size="10">scheduler</text>
+      </svg>
+    </div>
+
+    <div class="grid3">
+      <div class="card mini">
+        <h3>Iteration-1 focus</h3>
+        <ul>
+          <li>Slurm-first integration</li>
+          <li>Thin, testable adapter</li>
+          <li>One job schema</li>
+        </ul>
+      </div>
+      <div class="card mini">
+        <h3>Operator controls</h3>
+        <ul>
+          <li>dependency submission (DAG)</li>
+          <li>drain / stop-at-boundary</li>
+          <li>cancel / query</li>
+        </ul>
+      </div>
+      <div class="card mini">
+        <h3>Hard boundary</h3>
+        <ul>
+          <li>no host mutation here</li>
+          <li>host changes belong in dotfiles</li>
+          <li>prefer adopting schedulers</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="footer">
+      Open this file in a browser. Source-of-truth: docs/architecture/*.md and ARCHITECTURE.md
+    </div>
+  </div>
+</body>
+</html>

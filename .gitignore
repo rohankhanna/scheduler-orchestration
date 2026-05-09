@@ -1,0 +1,10 @@
+# python test/runtime artifacts
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# runtime state (local-only)
+runtime/
+
+# hermes local resume marker / scratch
+last

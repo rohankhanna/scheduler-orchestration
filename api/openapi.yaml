@@ -1,0 +1,282 @@
+openapi: 3.1.0
+info:
+  title: Scheduler Orchestration Local API
+  version: 0.1.0
+  summary: Local-first orchestration server API for scheduler-backed job graphs.
+  description: |
+    Server-first API surface for submitting and observing scheduler-backed jobs.
+
+    Security posture (iteration 1):
+    - Bind to loopback by default.
+    - Require API key header for all endpoints.
+    - Treat request bodies as untrusted input and validate against schema.
+servers:
+  - url: http://127.0.0.1:8780
+security:
+  - ApiKeyAuth: []
+paths:
+  /v1/jobs:
+    post:
+      operationId: submitJob
+      summary: Submit a job specification for scheduler admission.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubmitJobRequest'
+      responses:
+        '202':
+          description: Submission accepted by orchestration server.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubmitJobResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /v1/jobs/{job_id}:
+    get:
+      operationId: getJob
+      summary: Get server-tracked status for one job.
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+      responses:
+        '200':
+          description: Job status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetJobResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/queue:
+    get:
+      operationId: listQueue
+      summary: List queued/running jobs from scheduler view.
+      responses:
+        '200':
+          description: Queue snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueueResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /v1/drain:
+    post:
+      operationId: setDrainMode
+      summary: Enable or disable operator-level drain mode.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetDrainRequest'
+      responses:
+        '200':
+          description: Drain state updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SetDrainResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+  responses:
+    BadRequest:
+      description: Invalid request.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Unauthorized:
+      description: Missing or invalid API key.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotFound:
+      description: Resource not found.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+  schemas:
+    SubmitJobRequest:
+      type: object
+      additionalProperties: false
+      required: [spec]
+      properties:
+        spec:
+          $ref: '#/components/schemas/SchedulerJobSpec'
+    SubmitJobResponse:
+      type: object
+      additionalProperties: false
+      required: [server_job_id, accepted, reason]
+      properties:
+        server_job_id:
+          type: string
+          minLength: 1
+        accepted:
+          type: boolean
+        reason:
+          type: string
+          enum: [ok, drain_enabled]
+        command:
+          anyOf:
+            - type: array
+              items: { type: string }
+            - type: 'null'
+    GetJobResponse:
+      type: object
+      additionalProperties: false
+      required: [server_job_id, state]
+      properties:
+        server_job_id:
+          type: string
+        state:
+          type: string
+          enum: [accepted, blocked, submitted, running, succeeded, failed, canceled, unknown]
+        scheduler_job_id:
+          anyOf:
+            - type: string
+            - type: 'null'
+        detail:
+          type: object
+          additionalProperties: true
+    QueueResponse:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/QueueItem'
+    QueueItem:
+      type: object
+      additionalProperties: false
+      required: [job_id, name, state]
+      properties:
+        job_id: { type: string }
+        name: { type: string }
+        state: { type: string }
+        time: { type: string }
+        nodes: { type: string }
+        cpus: { type: string }
+        memory: { type: string }
+        reason: { type: string }
+    SetDrainRequest:
+      type: object
+      additionalProperties: false
+      required: [enabled]
+      properties:
+        enabled:
+          type: boolean
+    SetDrainResponse:
+      type: object
+      additionalProperties: false
+      required: [enabled, updated_at]
+      properties:
+        enabled: { type: boolean }
+        updated_at:
+          type: string
+          format: date-time
+    ErrorResponse:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: string
+    SchedulerJobSpec:
+      type: object
+      additionalProperties: false
+      required:
+        - job_name
+        - workflow_preset
+        - device_preference
+        - resources
+        - dependencies
+        - environment_overrides
+        - artifacts_root
+        - retry_policy
+        - drain_behavior
+      properties:
+        job_name:
+          type: string
+          minLength: 1
+        workflow_preset:
+          type: string
+          minLength: 1
+        device_preference:
+          type: string
+          enum: [gpu, cpu, auto]
+        resources:
+          type: object
+          additionalProperties: false
+          required:
+            - graphics_processing_units
+            - central_processing_unit_cores
+            - memory_gibibytes
+          properties:
+            graphics_processing_units:
+              type: integer
+              minimum: 0
+            central_processing_unit_cores:
+              type: integer
+              minimum: 1
+            memory_gibibytes:
+              type: integer
+              minimum: 1
+        dependencies:
+          type: object
+          additionalProperties: false
+          required: [parents, policy]
+          properties:
+            parents:
+              type: array
+              items:
+                type: string
+                minLength: 1
+            policy:
+              type: string
+              enum: [afterok, afterany]
+        environment_overrides:
+          type: object
+          additionalProperties:
+            type: string
+        artifacts_root:
+          type: string
+          minLength: 1
+        retry_policy:
+          type: object
+          additionalProperties: false
+          required: [max_attempts]
+          properties:
+            max_attempts:
+              type: integer
+              minimum: 1
+        drain_behavior:
+          type: object
+          additionalProperties: false
+          required: [honor_drain]
+          properties:
+            honor_drain:
+              type: boolean
