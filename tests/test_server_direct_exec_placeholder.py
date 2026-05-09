@@ -12,6 +12,7 @@ def _example_spec_dict():
         "job_name": "embedding-shard-0001",
         "workflow_preset": "embedding:v1",
         "device_preference": "gpu",
+        "payload": {"argv": ["echo", "hello-from-direct"]},
         "resources": {
             "graphics_processing_units": 1,
             "central_processing_unit_cores": 4,
@@ -25,12 +26,13 @@ def _example_spec_dict():
     }
 
 
-def test_direct_exec_placeholder_uses_systemd_run_and_persists_exit_code(tmp_path, monkeypatch):
-    # Enable the direct-exec backend (placeholder payload).
+def test_direct_exec_payload_uses_systemd_run_and_persists_exit_code(tmp_path, monkeypatch):
+    # Enable the direct-exec backend and allow real payload execution.
     monkeypatch.setenv("SCHED_ORCH_API_KEY", "test-key")
     monkeypatch.setenv("SCHED_ORCH_RUNTIME_DIR", str(tmp_path))
     monkeypatch.setenv("SCHED_ORCH_EXECUTION_BACKEND", "direct")
     monkeypatch.setenv("SCHED_ORCH_ENABLE_DIRECT_EXEC", "1")
+    monkeypatch.setenv("SCHED_ORCH_ENABLE_DIRECT_PAYLOAD_EXEC", "1")
 
     calls = []
 
@@ -63,8 +65,8 @@ def test_direct_exec_placeholder_uses_systemd_run_and_persists_exit_code(tmp_pat
     assert "--wait" in argv
     assert "--pipe" in argv
 
-    # Placeholder payload for conservative rollout.
-    assert argv[-2:] == ["--", "true"]
+    # Direct payload should be passed after the "--" marker.
+    assert argv[-3:] == ["--", "echo", "hello-from-direct"]
 
     # Durable job record should include exit code and a terminal state.
     job_path = tmp_path / "scheduler-job-ledger" / "jobs" / f"{server_job_id}.json"

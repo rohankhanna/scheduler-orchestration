@@ -95,6 +95,13 @@ def _direct_execution_enabled() -> bool:
     return val in {"1", "true", "yes", "on"}
 
 
+def _direct_payload_execution_enabled() -> bool:
+    # Conservative rollout: keep direct backend "real payload" execution gated separately.
+    # If this is not enabled, direct execution will run a placeholder payload ("true").
+    val = os.environ.get("SCHED_ORCH_ENABLE_DIRECT_PAYLOAD_EXEC", "0").strip().lower()
+    return val in {"1", "true", "yes", "on"}
+
+
 def _execution_backend() -> str:
     return os.environ.get("SCHED_ORCH_EXECUTION_BACKEND", "slurm").strip().lower()
 
@@ -137,9 +144,9 @@ def _cap_reconcile_job_limit(n: int) -> int:
     return n
 
 
-def _build_systemd_run_direct_placeholder_command() -> list[str]:
-    # Conservative rollout: placeholder payload only.
+def _build_systemd_run_direct_command(server_job_id: str, payload_argv: list[str]) -> list[str]:
     # Use argv list; no shell.
+    # This is the "cage": a transient systemd scope with cgroup properties applied.
 
     slice_name = os.environ.get("SCHED_ORCH_JOBS_SLICE", "sched-orch-jobs.slice").strip()
     allowed_cpus = os.environ.get("SCHED_ORCH_JOBS_ALLOWED_CPUS", "2-19").strip()
@@ -148,9 +155,12 @@ def _build_systemd_run_direct_placeholder_command() -> list[str]:
     cpu_weight = os.environ.get("SCHED_ORCH_JOBS_CPU_WEIGHT", "80").strip()
     io_weight = os.environ.get("SCHED_ORCH_JOBS_IO_WEIGHT", "80").strip()
 
+    unit_name = f"sched-orch-job-{server_job_id}.scope"
+
     return [
         "systemd-run",
         "--scope",
+        f"--unit={unit_name}",
         "--wait",
         "--pipe",
         f"--slice={slice_name}",
@@ -160,8 +170,38 @@ def _build_systemd_run_direct_placeholder_command() -> list[str]:
         f"--property=CPUWeight={cpu_weight}",
         f"--property=IOWeight={io_weight}",
         "--",
-        "true",
+        *payload_argv,
     ]
+
+
+def _direct_payload_argv_from_spec(spec: dict[str, Any]) -> list[str] | None:
+    payload = spec.get("payload")
+    if not isinstance(payload, dict):
+        return None
+
+    argv = payload.get("argv")
+    if not isinstance(argv, list) or not argv:
+        return None
+
+    out: list[str] = []
+    for item in argv:
+        if not isinstance(item, str):
+            return None
+        s = item.strip()
+        if not s:
+            return None
+        if "\x00" in s:
+            return None
+        out.append(s)
+
+    if not out:
+        return None
+
+    # Basic sanity limit to avoid pathological request sizes.
+    if len(out) > 64:
+        return None
+
+    return out
 
 
 def create_app() -> FastAPI:
@@ -305,12 +345,17 @@ def create_app() -> FastAPI:
 
         # Build a submission plan.
         # - slurm: existing sbatch-based plan builder
-        # - direct: conservative placeholder plan (systemd-run true)
+        # - direct: systemd-run scoped execution (payload can be gated)
         if backend == "direct":
             if is_drain_enabled(_drain_state_path()):
                 plan = {"allowed": False, "reason": "drain_enabled", "command": None}
             else:
-                plan = {"allowed": True, "reason": "ok", "command": ["true"]}
+                payload_argv = _direct_payload_argv_from_spec(spec)
+                if payload_argv and _direct_payload_execution_enabled():
+                    plan = {"allowed": True, "reason": "ok", "command": payload_argv}
+                else:
+                    # Conservative rollout: placeholder until payload execution is explicitly enabled.
+                    plan = {"allowed": True, "reason": "ok", "command": ["true"]}
         else:
             plan = build_submission_plan(spec, drain_state_path=_drain_state_path())
 
@@ -322,21 +367,26 @@ def create_app() -> FastAPI:
         state = "accepted" if plan["allowed"] else "blocked"
 
         if plan["allowed"] and backend == "direct" and _direct_execution_enabled():
-            cmd = _build_systemd_run_direct_placeholder_command()
-            try:
-                proc = subprocess.run(
-                    cmd,
-                    check=False,
-                    capture_output=True,
-                    text=True,
-                    timeout=60,
-                )
-            except (subprocess.TimeoutExpired, FileNotFoundError):
-                exit_code = None
+            payload_argv = plan.get("command")
+            if not isinstance(payload_argv, list) or not payload_argv or not all(isinstance(x, str) for x in payload_argv):
+                # Plan should always contain an argv list for direct backend.
                 state = "failed"
             else:
-                exit_code = int(proc.returncode)
-                state = "succeeded" if proc.returncode == 0 else "failed"
+                cmd = _build_systemd_run_direct_command(server_job_id, payload_argv)
+                try:
+                    proc = subprocess.run(
+                        cmd,
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                        timeout=60,
+                    )
+                except (subprocess.TimeoutExpired, FileNotFoundError):
+                    exit_code = None
+                    state = "failed"
+                else:
+                    exit_code = int(proc.returncode)
+                    state = "succeeded" if proc.returncode == 0 else "failed"
 
         if plan["allowed"] and backend != "direct" and _scheduler_execution_enabled():
             cmd = plan.get("command")
