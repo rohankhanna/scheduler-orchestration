@@ -490,7 +490,8 @@ def create_app() -> FastAPI:
 
                     terminal_states = {"blocked", "failed", "canceled", "succeeded"}
 
-                    candidates: list[dict[str, Any]] = []
+                    # Refresh slurm jobs (one squeue call).
+                    slurm_candidates: list[dict[str, Any]] = []
                     for path in paths:
                         record = read_job_record_from_path(path)
                         if record.get("execution_backend") != "slurm":
@@ -503,11 +504,11 @@ def create_app() -> FastAPI:
                         if record.get("state") in terminal_states:
                             continue
 
-                        candidates.append(record)
-                        if len(candidates) >= max_jobs:
+                        slurm_candidates.append(record)
+                        if len(slurm_candidates) >= max_jobs:
                             break
 
-                    if candidates:
+                    if slurm_candidates:
                         cmd = build_squeue_list_command()
                         proc = subprocess.run(
                             cmd,
@@ -525,10 +526,56 @@ def create_app() -> FastAPI:
                                 state_by_job_id[job_id] = state
 
                         now = utc_now_rfc3339()
-                        for record in candidates:
+                        for record in slurm_candidates:
                             scheduler_job_id = str(record.get("scheduler_job_id", "")).strip()
                             record["scheduler_state"] = state_by_job_id.get(scheduler_job_id, "not_in_queue")
                             record["last_refresh_at"] = now
+                            write_job_record(runtime_dir, record)
+
+                    # Refresh direct jobs (bounded; one systemctl call per job).
+                    if _direct_refresh_enabled():
+                        direct_candidates: list[dict[str, Any]] = []
+                        for path in paths:
+                            record = read_job_record_from_path(path)
+                            if record.get("execution_backend") != "direct":
+                                continue
+
+                            if record.get("state") in terminal_states:
+                                continue
+
+                            direct_candidates.append(record)
+                            if len(direct_candidates) >= max_jobs:
+                                break
+
+                        for record in direct_candidates:
+                            server_job_id = str(record.get("server_job_id", "")).strip()
+                            if not server_job_id:
+                                continue
+
+                            unit_name = _direct_systemd_scope_name(server_job_id)
+                            cmd = [
+                                "systemctl",
+                                "show",
+                                unit_name,
+                                "--property=ActiveState",
+                                "--property=SubState",
+                                "--no-pager",
+                            ]
+                            try:
+                                proc = subprocess.run(
+                                    cmd,
+                                    check=True,
+                                    capture_output=True,
+                                    text=True,
+                                    timeout=5,
+                                )
+                            except (subprocess.TimeoutExpired, subprocess.CalledProcessError, FileNotFoundError):
+                                continue
+
+                            props = _parse_systemctl_show_properties(proc.stdout)
+                            record["direct_scope_active_state"] = props.get("ActiveState")
+                            record["direct_scope_sub_state"] = props.get("SubState")
+                            record["last_refresh_at"] = utc_now_rfc3339()
                             write_job_record(runtime_dir, record)
                 except Exception:
                     # Best-effort only: do not fail the list endpoint for refresh failures.

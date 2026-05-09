@@ -25,7 +25,7 @@ paths:
           required: false
           schema:
             type: boolean
-          description: When true, query the scheduler backend for a bounded set of jobs and persist refreshed scheduler state into the ledger before returning the list.
+          description: When true, query the backend for a bounded set of jobs and persist refreshed state into the ledger before returning the list. Direct backend refresh requires SCHED_ORCH_ENABLE_DIRECT_REFRESH=1.
       responses:
         '200':
           description: Jobs list.
