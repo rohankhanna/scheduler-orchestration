@@ -1,24 +1,189 @@
 openapi: 3.1.0
 info:
   title: Scheduler Orchestration Local API
-  version: 0.1.0
+  version: 0.2.0
   summary: Local-first orchestration server API for scheduler-backed job graphs.
   description: |
-    Server-first API surface for submitting and observing scheduler-backed jobs.
+    Dispatch is a local-first orchestration server for submitting, observing,
+    and controlling scheduler-backed job graphs.
 
     Security posture (iteration 1):
     - Bind to loopback by default.
-    - Require API key header for all endpoints.
+    - Use user sessions for human/project administration.
+    - Use API keys for programmatic job submission.
     - Treat request bodies as untrusted input and validate against schema.
 servers:
   - url: http://127.0.0.1:8780
-security:
-  - ApiKeyAuth: []
 paths:
+  /v1/users:
+    post:
+      operationId: createUser
+      summary: Create a new user account.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateUserRequest'
+      responses:
+        '201':
+          description: User created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateUserResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /v1/login:
+    post:
+      operationId: login
+      summary: Log in a user and mint a short-lived access token plus refresh token.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Login succeeded.
+          headers:
+            Set-Cookie:
+              description: HttpOnly refresh-token cookie for browser UI clients.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /v1/token/refresh:
+    post:
+      operationId: refreshSession
+      summary: Rotate the refresh token and mint a new access token.
+      responses:
+        '200':
+          description: Session refreshed.
+          headers:
+            Set-Cookie:
+              description: Rotated refresh-token cookie for browser UI clients.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /v1/projects:
+    post:
+      operationId: createProject
+      summary: Create a project/program identity for API-key management.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateProjectRequest'
+      responses:
+        '201':
+          description: Project created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateProjectResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /v1/projects/{project_id}/api-keys:
+    get:
+      operationId: listProjectApiKeys
+      summary: List API key metadata for a project.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: project_id
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+      responses:
+        '200':
+          description: Key metadata.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListApiKeysResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      operationId: mintProjectApiKey
+      summary: Mint a new API key for a project.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: project_id
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MintApiKeyRequest'
+      responses:
+        '201':
+          description: API key minted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MintApiKeyResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /v1/api-keys/{key_id}:
+    delete:
+      operationId: revokeApiKey
+      summary: Revoke an API key.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: key_id
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+      responses:
+        '200':
+          description: API key revoked.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RevokeApiKeyResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /v1/jobs:
     get:
       operationId: listJobs
       summary: List jobs tracked by the orchestration server (ledger-backed).
+      security:
+        - ApiKeyAuth: []
       parameters:
         - name: refresh
           in: query
@@ -40,6 +205,8 @@ paths:
     post:
       operationId: submitJob
       summary: Submit a job specification for scheduler admission.
+      security:
+        - ApiKeyAuth: []
       requestBody:
         required: true
         content:
@@ -61,6 +228,8 @@ paths:
     get:
       operationId: getJob
       summary: Get server-tracked status for one job.
+      security:
+        - ApiKeyAuth: []
       parameters:
         - name: job_id
           in: path
@@ -88,6 +257,8 @@ paths:
     delete:
       operationId: cancelJob
       summary: Cancel a job via the active execution backend.
+      security:
+        - ApiKeyAuth: []
       parameters:
         - name: job_id
           in: path
@@ -112,6 +283,8 @@ paths:
     get:
       operationId: getJobLogs
       summary: Get captured logs for a direct backend job.
+      security:
+        - ApiKeyAuth: []
       parameters:
         - name: job_id
           in: path
@@ -136,6 +309,8 @@ paths:
     get:
       operationId: listQueue
       summary: List queued/running jobs from scheduler view.
+      security:
+        - ApiKeyAuth: []
       responses:
         '200':
           description: Queue snapshot.
@@ -149,6 +324,8 @@ paths:
     post:
       operationId: setDrainMode
       summary: Enable or disable operator-level drain mode.
+      security:
+        - ApiKeyAuth: []
       requestBody:
         required: true
         content:
@@ -172,6 +349,10 @@ components:
       type: apiKey
       in: header
       name: X-API-Key
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
   responses:
     BadRequest:
       description: Invalid request.
@@ -180,7 +361,7 @@ components:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
     Unauthorized:
-      description: Missing or invalid API key.
+      description: Missing or invalid authentication.
       content:
         application/json:
           schema:
@@ -191,7 +372,153 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
+    Conflict:
+      description: Resource conflict.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
   schemas:
+    CreateUserRequest:
+      type: object
+      additionalProperties: false
+      required: [username, password]
+      properties:
+        username:
+          type: string
+          minLength: 1
+        password:
+          type: string
+          minLength: 8
+    CreateUserResponse:
+      type: object
+      additionalProperties: false
+      required: [user_id, username, created_at]
+      properties:
+        user_id:
+          type: string
+        username:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+    LoginRequest:
+      type: object
+      additionalProperties: false
+      required: [username, password]
+      properties:
+        username:
+          type: string
+          minLength: 1
+        password:
+          type: string
+          minLength: 1
+    LoginResponse:
+      type: object
+      additionalProperties: false
+      required: [access_token, access_expires_at]
+      properties:
+        access_token:
+          type: string
+        access_expires_at:
+          type: string
+          format: date-time
+        refresh_token:
+          type: string
+          description: Included for API clients; browser clients typically rely on the refresh cookie.
+        refresh_expires_at:
+          type: string
+          format: date-time
+        user:
+          type: object
+          additionalProperties: false
+          required: [user_id]
+          properties:
+            user_id:
+              type: string
+            username:
+              type: string
+    CreateProjectRequest:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+    CreateProjectResponse:
+      type: object
+      additionalProperties: false
+      required: [project_id, name, created_at]
+      properties:
+        project_id:
+          type: string
+        name:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+    MintApiKeyRequest:
+      type: object
+      additionalProperties: false
+      required: [label]
+      properties:
+        label:
+          type: string
+    MintApiKeyResponse:
+      type: object
+      additionalProperties: false
+      required: [key_id, project_id, label, created_at, expires_at, api_key]
+      properties:
+        key_id:
+          type: string
+        project_id:
+          type: string
+        label:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+        api_key:
+          type: string
+    ListApiKeysResponse:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ApiKeyItem'
+    ApiKeyItem:
+      type: object
+      additionalProperties: false
+      required: [key_id, project_id, label, created_at, expires_at]
+      properties:
+        key_id:
+          type: string
+        project_id:
+          type: string
+        label:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+    RevokeApiKeyResponse:
+      type: object
+      additionalProperties: false
+      required: [key_id, revoked]
+      properties:
+        key_id:
+          type: string
+        revoked:
+          type: boolean
     SubmitJobRequest:
       type: object
       additionalProperties: false

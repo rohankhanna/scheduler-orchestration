@@ -22,8 +22,30 @@ def test_openapi_security_is_api_key_and_server_is_loopback_only():
     assert schemes["ApiKeyAuth"]["in"] == "header"
     assert schemes["ApiKeyAuth"]["name"] == "X-API-Key"
 
-    # Top-level security requirement.
-    assert {"ApiKeyAuth": []} in spec.get("security", [])
+    # Security scheme presence
+    assert "BearerAuth" in schemes
+    assert schemes["BearerAuth"]["type"] == "http"
+    assert schemes["BearerAuth"]["scheme"] == "bearer"
+
+    # Per-route security requirements (no global security).
+    paths = spec["paths"]
+
+    # Job endpoints require API key auth.
+    assert {"ApiKeyAuth": []} in paths["/v1/jobs"]["get"].get("security", [])
+    assert {"ApiKeyAuth": []} in paths["/v1/jobs"]["post"].get("security", [])
+    assert {"ApiKeyAuth": []} in paths["/v1/jobs/{job_id}"]["get"].get("security", [])
+    assert {"ApiKeyAuth": []} in paths["/v1/jobs/{job_id}"]["delete"].get("security", [])
+
+    # Project/key administration requires bearer session.
+    assert {"BearerAuth": []} in paths["/v1/projects"]["post"].get("security", [])
+    assert {"BearerAuth": []} in paths["/v1/projects/{project_id}/api-keys"]["post"].get("security", [])
+    assert {"BearerAuth": []} in paths["/v1/projects/{project_id}/api-keys"]["get"].get("security", [])
+    assert {"BearerAuth": []} in paths["/v1/api-keys/{key_id}"]["delete"].get("security", [])
+
+    # Signup/login/refresh are intentionally open (no security requirement).
+    assert "security" not in paths["/v1/users"]["post"]
+    assert "security" not in paths["/v1/login"]["post"]
+    assert "security" not in paths["/v1/token/refresh"]["post"]
 
 
 def test_openapi_schema_tightening_basics():

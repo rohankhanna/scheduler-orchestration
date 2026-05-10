@@ -11,10 +11,20 @@ from pathlib import Path
 from typing import Any
 
 from scheduler_orchestration.api_keyring import check_api_key_against_keyring
+from scheduler_orchestration.auth_store import (
+    authenticate_access_token,
+    check_project_api_key,
+    create_project,
+    create_user,
+    default_auth_config,
+    issue_login_tokens,
+    mint_project_api_key,
+    refresh_session,
+)
 
 from fastapi import FastAPI, Header, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 
 from scheduler_orchestration.backends import get_backend_ops
 from scheduler_orchestration.direct_backend import (
@@ -98,21 +108,22 @@ def _expired_api_key_message() -> str:
 
 
 def _require_api_key(x_api_key: str | None) -> None:
-    expected = os.environ.get("SCHED_ORCH_API_KEY")
-    keyring_path = _api_keyring_path()
-
-    if not expected and not keyring_path.exists():
-        # Fail closed: server should not run without an explicit auth mechanism.
-        raise HTTPException(status_code=500, detail="server_misconfigured")
-
+    # Dispatch job submission uses project API keys.
+    # Legacy env-var and legacy keyring remain accepted for backward compatibility,
+    # but are not required for server startup.
     if not x_api_key:
         raise HTTPException(status_code=401, detail="unauthorized")
 
-    # Legacy single-key auth (still supported).
+    expected = os.environ.get("SCHED_ORCH_API_KEY")
     if expected and hmac.compare_digest(x_api_key, expected):
         return
 
-    # Keyring auth.
+    # Prefer Dispatch project key store.
+    if check_project_api_key(_runtime_dir(), x_api_key):
+        return
+
+    # Legacy keyring auth (format-compatible with project key store, but not required).
+    keyring_path = _api_keyring_path()
     if keyring_path.exists():
         result = check_api_key_against_keyring(keyring_path, x_api_key, now=datetime.now(timezone.utc))
         if result.ok:
@@ -248,12 +259,8 @@ def _execution_backend_for_record(record: dict[str, Any]) -> str | None:
 
 
 def create_app() -> FastAPI:
-    # Fail closed: require an explicit auth mechanism.
-    if not os.environ.get("SCHED_ORCH_API_KEY") and not _api_keyring_path().exists():
-        raise RuntimeError(
-            "Missing auth configuration: set SCHED_ORCH_API_KEY or create a keyring at "
-            f"{_api_keyring_path()} (or set SCHED_ORCH_API_KEYRING_PATH)"
-        )
+    # Dispatch starts even when no users or API keys exist yet.
+    # Job submission endpoints will return 401 until a project API key is minted.
 
     def _startup_reconcile_ledger_best_effort() -> None:
         if not _startup_reconcile_enabled():
@@ -325,6 +332,328 @@ def create_app() -> FastAPI:
     @app.exception_handler(RequestValidationError)
     def _handle_validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
         return JSONResponse(status_code=400, content={"error": "bad_request"})
+
+    def _bearer_token_from_header(authorization: str | None) -> str | None:
+        raw = str(authorization or "").strip()
+        if not raw:
+            return None
+        parts = raw.split(" ", 1)
+        if len(parts) != 2:
+            return None
+        if parts[0].lower() != "bearer":
+            return None
+        token = parts[1].strip()
+        if not token:
+            return None
+        return token
+
+    def _require_user_session(authorization: str | None) -> dict[str, Any]:
+        token = _bearer_token_from_header(authorization)
+        if not token:
+            raise HTTPException(status_code=401, detail="unauthorized")
+
+        session = authenticate_access_token(_runtime_dir(), token)
+        if not session:
+            raise HTTPException(status_code=401, detail="unauthorized")
+        return session
+
+    @app.post("/v1/users", status_code=201)
+    def create_user_endpoint(body: dict[str, Any]) -> dict[str, Any]:
+        username = body.get("username")
+        password = body.get("password")
+        if not isinstance(username, str) or not isinstance(password, str):
+            raise HTTPException(status_code=400, detail="bad_request")
+        try:
+            return create_user(_runtime_dir(), username=username, password=password)
+        except ValueError as exc:
+            if str(exc) == "conflict":
+                raise HTTPException(status_code=409, detail="conflict")
+            raise HTTPException(status_code=400, detail="bad_request")
+
+    @app.post("/v1/login")
+    def login_endpoint(body: dict[str, Any], request: Request) -> dict[str, Any]:
+        username = body.get("username")
+        password = body.get("password")
+        if not isinstance(username, str) or not isinstance(password, str):
+            raise HTTPException(status_code=400, detail="bad_request")
+
+        cfg = default_auth_config()
+        try:
+            tokens = issue_login_tokens(_runtime_dir(), username=username, password=password, cfg=cfg)
+        except ValueError:
+            raise HTTPException(status_code=401, detail="unauthorized")
+
+        response = {
+            "access_token": tokens["access_token"],
+            "access_expires_at": tokens["access_expires_at"],
+            "refresh_token": tokens["refresh_token"],
+            "refresh_expires_at": tokens["refresh_expires_at"],
+            "user": tokens.get("user") or {},
+        }
+
+        # Set refresh cookie for browser clients.
+        from fastapi.responses import JSONResponse as _JSONResponse
+
+        res = _JSONResponse(status_code=200, content=response)
+        res.set_cookie(
+            key=cfg.refresh_cookie_name,
+            value=tokens["refresh_token"],
+            httponly=True,
+            samesite="lax",
+            secure=False,
+            path="/",
+        )
+        return res
+
+    @app.post("/v1/token/refresh")
+    def refresh_endpoint(request: Request, body: dict[str, Any] | None = None) -> dict[str, Any]:
+        cfg = default_auth_config()
+
+        provided = ""
+        if isinstance(body, dict):
+            val = body.get("refresh_token")
+            if isinstance(val, str):
+                provided = val
+
+        cookie_val = request.cookies.get(cfg.refresh_cookie_name, "")
+        refresh_token = cookie_val or provided
+        if not refresh_token:
+            raise HTTPException(status_code=401, detail="unauthorized")
+
+        try:
+            tokens = refresh_session(_runtime_dir(), refresh_token=refresh_token, cfg=cfg)
+        except ValueError:
+            raise HTTPException(status_code=401, detail="unauthorized")
+
+        response = {
+            "access_token": tokens["access_token"],
+            "access_expires_at": tokens["access_expires_at"],
+            "refresh_token": tokens["refresh_token"],
+            "refresh_expires_at": tokens["refresh_expires_at"],
+            "user": tokens.get("user") or {},
+        }
+
+        from fastapi.responses import JSONResponse as _JSONResponse
+
+        res = _JSONResponse(status_code=200, content=response)
+        res.set_cookie(
+            key=cfg.refresh_cookie_name,
+            value=tokens["refresh_token"],
+            httponly=True,
+            samesite="lax",
+            secure=False,
+            path="/",
+        )
+        return res
+
+    @app.get("/ui", response_class=HTMLResponse)
+    def ui() -> str:
+        # Minimal GUI shell. It intentionally calls the same /v1 API endpoints.
+        return """<!doctype html>
+<html>
+<head>
+  <meta charset=\"utf-8\" />
+  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
+  <title>Dispatch</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 24px; max-width: 980px; }
+    h1 { margin: 0 0 12px 0; }
+    .row { display: flex; gap: 16px; flex-wrap: wrap; }
+    .card { border: 1px solid #ddd; padding: 12px; border-radius: 8px; min-width: 320px; }
+    label { display: block; font-size: 12px; margin-top: 8px; }
+    input { width: 100%; padding: 6px; }
+    button { margin-top: 10px; padding: 8px 12px; }
+    pre { background: #f7f7f7; padding: 10px; border-radius: 8px; overflow-x: auto; }
+  </style>
+</head>
+<body>
+  <h1>Dispatch</h1>
+  <p>Local-first orchestration server. This UI calls the same /v1 API endpoints used by programs.</p>
+
+  <div class=\"row\">
+    <div class=\"card\">
+      <h3>Sign up</h3>
+      <label>Username</label><input id=\"su_user\" />
+      <label>Password</label><input id=\"su_pass\" type=\"password\" />
+      <button onclick=\"signup()\">Create user</button>
+    </div>
+
+    <div class=\"card\">
+      <h3>Login</h3>
+      <label>Username</label><input id=\"li_user\" />
+      <label>Password</label><input id=\"li_pass\" type=\"password\" />
+      <button onclick=\"login()\">Login</button>
+      <div style=\"margin-top:8px; font-size: 12px\">Access token is kept in memory; refresh token is stored as an HttpOnly cookie.</div>
+    </div>
+
+    <div class=\"card\">
+      <h3>Project and API key</h3>
+      <label>Project name</label><input id=\"pr_name\" />
+      <button onclick=\"createProject()\">Create project</button>
+      <label style=\"margin-top:12px\">Project id</label><input id=\"pr_id\" />
+      <label>Key label</label><input id=\"key_label\" value=\"default\" />
+      <button onclick=\"mintKey()\">Mint API key</button>
+    </div>
+  </div>
+
+  <h3>Output</h3>
+  <pre id=\"out\"></pre>
+
+<script>
+let accessToken = null;
+
+function show(obj) {
+  document.getElementById('out').textContent = JSON.stringify(obj, null, 2);
+}
+
+async function signup() {
+  const username = document.getElementById('su_user').value;
+  const password = document.getElementById('su_pass').value;
+  const r = await fetch('/v1/users', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({username, password})});
+  show({status: r.status, body: await r.json()});
+}
+
+async function login() {
+  const username = document.getElementById('li_user').value;
+  const password = document.getElementById('li_pass').value;
+  const r = await fetch('/v1/login', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({username, password})});
+  const body = await r.json();
+  if (r.status === 200) {
+    accessToken = body.access_token;
+  }
+  show({status: r.status, body});
+}
+
+async function createProject() {
+  const name = document.getElementById('pr_name').value;
+  const r = await fetch('/v1/projects', {method:'POST', headers:{'Content-Type':'application/json', 'Authorization': 'Bearer ' + accessToken}, body: JSON.stringify({name})});
+  const body = await r.json();
+  if (r.status === 201) {
+    document.getElementById('pr_id').value = body.project_id;
+  }
+  show({status: r.status, body});
+}
+
+async function mintKey() {
+  const project_id = document.getElementById('pr_id').value;
+  const label = document.getElementById('key_label').value;
+  const r = await fetch('/v1/projects/' + project_id + '/api-keys', {method:'POST', headers:{'Content-Type':'application/json', 'Authorization': 'Bearer ' + accessToken}, body: JSON.stringify({label, ttl_seconds: 3600})});
+  show({status: r.status, body: await r.json()});
+}
+</script>
+</body>
+</html>"""
+
+    @app.post("/v1/projects", status_code=201)
+    def create_project_endpoint(body: dict[str, Any], authorization: str | None = Header(default=None, alias="Authorization")) -> dict[str, Any]:
+        session = _require_user_session(authorization)
+        name = body.get("name")
+        if not isinstance(name, str):
+            raise HTTPException(status_code=400, detail="bad_request")
+        try:
+            return create_project(_runtime_dir(), owner_user_id=str(session["user_id"]), name=name)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="bad_request")
+
+    @app.post("/v1/projects/{project_id}/api-keys", status_code=201)
+    def mint_api_key_endpoint(
+        project_id: str,
+        body: dict[str, Any],
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        _require_user_session(authorization)
+        label = body.get("label")
+        ttl_seconds = body.get("ttl_seconds", 30 * 24 * 3600)
+        if not isinstance(label, str):
+            raise HTTPException(status_code=400, detail="bad_request")
+        if not isinstance(ttl_seconds, int):
+            raise HTTPException(status_code=400, detail="bad_request")
+
+        try:
+            return mint_project_api_key(_runtime_dir(), project_id=project_id, label=label, ttl_seconds=ttl_seconds)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="bad_request")
+
+    @app.get("/v1/projects/{project_id}/api-keys")
+    def list_api_keys_endpoint(project_id: str, authorization: str | None = Header(default=None, alias="Authorization")) -> dict[str, Any]:
+        _require_user_session(authorization)
+        keyring_path = _api_keyring_path()
+        items: list[dict[str, Any]] = []
+        if keyring_path.exists():
+            try:
+                import json as _json
+
+                data = _json.loads(keyring_path.read_text(encoding="utf-8"))
+                keys = data.get("keys") if isinstance(data, dict) else []
+                if isinstance(keys, list):
+                    for rec in keys:
+                        if not isinstance(rec, dict):
+                            continue
+                        if str(rec.get("project_id") or "") != str(project_id):
+                            continue
+                        if rec.get("revoked_at") is not None:
+                            continue
+                        items.append(
+                            {
+                                "key_id": str(rec.get("key_id") or ""),
+                                "project_id": str(rec.get("project_id") or ""),
+                                "label": str(rec.get("label") or ""),
+                                "created_at": str(rec.get("created_at") or ""),
+                                "expires_at": str(rec.get("expires_at") or ""),
+                            }
+                        )
+            except Exception:
+                pass
+        return {"items": items}
+
+    @app.delete("/v1/api-keys/{key_id}")
+    def revoke_api_key_endpoint(key_id: str, authorization: str | None = Header(default=None, alias="Authorization")) -> dict[str, Any]:
+        _require_user_session(authorization)
+
+        keyring_path = _api_keyring_path()
+        if not keyring_path.exists():
+            raise HTTPException(status_code=404, detail="not_found")
+
+        try:
+            import json as _json
+
+            data = _json.loads(keyring_path.read_text(encoding="utf-8"))
+        except Exception:
+            raise HTTPException(status_code=404, detail="not_found")
+
+        if not isinstance(data, dict):
+            raise HTTPException(status_code=404, detail="not_found")
+
+        keys = data.get("keys")
+        if not isinstance(keys, list):
+            raise HTTPException(status_code=404, detail="not_found")
+
+        found = False
+        now_s = utc_now_rfc3339()
+        for rec in keys:
+            if not isinstance(rec, dict):
+                continue
+            if str(rec.get("key_id") or "") != str(key_id):
+                continue
+            if rec.get("revoked_at") is None:
+                rec["revoked_at"] = now_s
+            found = True
+            break
+
+        if not found:
+            raise HTTPException(status_code=404, detail="not_found")
+
+        try:
+            keyring_path.parent.mkdir(parents=True, exist_ok=True)
+            keyring_path.write_text(__import__("json").dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            try:
+                os.chmod(keyring_path, 0o600)
+            except PermissionError:
+                pass
+        except Exception:
+            raise HTTPException(status_code=500, detail="server_error")
+
+        return {"key_id": str(key_id), "revoked": True}
 
     @app.get("/v1/queue")
     def list_queue(x_api_key: str | None = Header(default=None, alias="X-API-Key")) -> dict[str, Any]:

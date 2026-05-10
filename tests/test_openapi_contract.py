@@ -14,6 +14,28 @@ def test_openapi_contract_exists_and_has_required_routes():
     assert spec["info"]["version"]
 
     paths = spec["paths"]
+
+    # Auth + key management
+    assert "/v1/users" in paths
+    assert "post" in paths["/v1/users"]
+
+    assert "/v1/login" in paths
+    assert "post" in paths["/v1/login"]
+
+    assert "/v1/token/refresh" in paths
+    assert "post" in paths["/v1/token/refresh"]
+
+    assert "/v1/projects" in paths
+    assert "post" in paths["/v1/projects"]
+
+    assert "/v1/projects/{project_id}/api-keys" in paths
+    assert "post" in paths["/v1/projects/{project_id}/api-keys"]
+    assert "get" in paths["/v1/projects/{project_id}/api-keys"]
+
+    assert "/v1/api-keys/{key_id}" in paths
+    assert "delete" in paths["/v1/api-keys/{key_id}"]
+
+    # Job control
     assert "/v1/jobs" in paths
     assert "post" in paths["/v1/jobs"]
     assert "get" in paths["/v1/jobs"]
