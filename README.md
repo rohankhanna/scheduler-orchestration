@@ -32,3 +32,15 @@ That means:
 Run the test suite:
 
 - pytest -q
+
+## Run the server (dev)
+
+The repo currently ships a small operator CLI (no packaging entrypoint yet). Use it via:
+
+- python -m scheduler_orchestration.dispatch server start --runtime-dir /abs/path/to/dispatch-runtime
+
+Then:
+
+- UI: http://127.0.0.1:8780/ui
+- Logs: python -m scheduler_orchestration.dispatch server logs -f --runtime-dir /abs/path/to/dispatch-runtime
+- Stop: python -m scheduler_orchestration.dispatch server stop --runtime-dir /abs/path/to/dispatch-runtime
