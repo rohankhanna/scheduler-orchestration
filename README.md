@@ -1,13 +1,34 @@
 # scheduler-orchestration
 
-A small, local-first orchestration repository for running long-horizon, resource-aware, dependency-aware job graphs on a single machine.
+A small, local-first orchestration integration layer for running long-horizon, resource-aware, dependency-aware job graphs on a single machine.
 
-Initial intended use:
-- act as the durable scheduler layer for embedding and clustering workflows that need queued waiting, multi-resource admission, dependency chaining, and drain controls.
+This project is explicitly not a scheduler core. It prefers integrating mature schedulers (iteration 1: Slurm) while exposing a stable local API for other applications to submit, observe, and control work.
 
-This repository should prefer integrating mature schedulers (for example Slurm) over building a new scheduler core.
+## What you get
 
-Interface policy:
-- The primary user surface is an always-on local server with a stable API.
-- Language client libraries call that API.
-- A command-line interface is optional and must be a thin wrapper around the API client, intended only for manual debugging.
+- An always-on local server with a stable API (submit, status, list, cancel, drain/resume).
+- A durable job ledger on disk so operator state survives reboot.
+- Backend adapters that construct scheduler commands and (optionally) execute them.
+
+## Direction (usable-first)
+
+The intended direction is to become a minimal, dependable substrate that other applications can target early.
+
+That means:
+
+- ship a stable API and contract even if individual backends are incomplete
+- persist enough state to support restart and post-mortem investigation
+- capture failure evidence (at least: exit code and stdout/stderr for the direct backend)
+- iterate based on real workload feedback, not on speculative completeness
+
+## Architecture
+
+- ARCHITECTURE.md
+- docs/architecture/slurm-integration-scope.md
+- docs/architecture/backend-ops-execution-contract.md
+
+## Verification (canonical)
+
+Run the test suite:
+
+- pytest -q

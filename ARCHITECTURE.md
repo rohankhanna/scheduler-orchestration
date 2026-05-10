@@ -22,4 +22,5 @@ It is explicitly not a scheduler core.
 
 - docs/architecture/slurm-integration-boundary.md
 - docs/architecture/slurm-integration-scope.md
+- docs/architecture/backend-ops-execution-contract.md
 - docs/architecture/architecture.html
