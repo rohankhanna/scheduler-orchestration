@@ -43,7 +43,13 @@ def _client(tmp_path, monkeypatch, *, key: str, expires_at: str):
     return TestClient(create_app())
 
 
-def test_expired_api_key_mentions_how_to_regenerate(tmp_path, monkeypatch):
+def test_expired_api_key_message_is_loaded_from_markdown_file(tmp_path, monkeypatch):
+    md_path = tmp_path / "docs" / "expired_api_key.md"
+    md_path.parent.mkdir(parents=True, exist_ok=True)
+    md_text = "API key expired. Regenerate with: python -m scheduler_orchestration.keyring mint --ttl 30d --label my-client\n"
+    md_path.write_text(md_text, encoding="utf-8")
+    monkeypatch.setenv("SCHED_ORCH_EXPIRED_API_KEY_MESSAGE_MD_PATH", str(md_path))
+
     client = _client(tmp_path, monkeypatch, key="expired-key", expires_at="2000-01-01T00:00:00Z")
 
     r = client.get("/v1/queue", headers={"X-API-Key": "expired-key"})
@@ -51,8 +57,7 @@ def test_expired_api_key_mentions_how_to_regenerate(tmp_path, monkeypatch):
 
     body = r.json()
     assert body["error"] == "unauthorized"
-    assert "message" in body
-    assert "python -m scheduler_orchestration.keyring mint" in body["message"]
+    assert body.get("message") == md_text.strip()
 
 
 def test_unexpired_keyring_api_key_is_authorized(tmp_path, monkeypatch):

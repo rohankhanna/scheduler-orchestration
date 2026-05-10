@@ -80,10 +80,26 @@ def _api_keyring_path() -> Path:
 
 
 def _expired_api_key_message() -> str:
-    return (
-        "API key expired. Regenerate a local key with: "
-        "python -m scheduler_orchestration.keyring mint --ttl 30d --label <name>"
-    )
+    # This message is sourced from a markdown file so it stays "documentation-driven"
+    # (system-wide doc edits can update the runtime error message).
+    configured = os.environ.get("SCHED_ORCH_EXPIRED_API_KEY_MESSAGE_MD_PATH", "").strip()
+    candidates: list[Path] = []
+    if configured:
+        candidates.append(Path(configured))
+
+    # Default to a repo-local docs path when running from source.
+    repo_root = Path(__file__).resolve().parents[2]
+    candidates.append(repo_root / "docs" / "auth" / "expired_api_key.md")
+
+    for p in candidates:
+        try:
+            if p.exists():
+                return p.read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+
+    # Last-resort fallback if the markdown file is unavailable.
+    return "API key expired. Regenerate a local key with: python -m scheduler_orchestration.keyring mint --ttl 30d --label <name>"
 
 
 def _require_api_key(x_api_key: str | None) -> None:
