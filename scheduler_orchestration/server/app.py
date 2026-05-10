@@ -387,71 +387,29 @@ def create_app() -> FastAPI:
         scheduler_job_id: str | None = None
         exit_code: int | None = None
         direct_scope_name: str | None = direct_systemd_scope_name(server_job_id) if backend == "direct" else None
-        log_capture = {"stdout": False, "stderr": False}
+        log_capture: dict[str, Any] = {"stdout": False, "stderr": False}
         state = "accepted" if plan["allowed"] else "blocked"
 
-        if plan["allowed"] and backend == "direct" and _direct_execution_enabled():
-            payload_argv = plan.get("command")
-            if not isinstance(payload_argv, list) or not payload_argv or not all(isinstance(x, str) for x in payload_argv):
-                # Plan should always contain an argv list for direct backend.
-                state = "failed"
-            else:
-                cmd = build_systemd_run_direct_command(server_job_id, payload_argv)
-                try:
-                    proc = subprocess.run(
-                        cmd,
-                        check=False,
-                        capture_output=True,
-                        text=True,
-                        timeout=60,
-                    )
-                except (subprocess.TimeoutExpired, FileNotFoundError):
-                    exit_code = None
-                    state = "failed"
-                else:
-                    exit_code = int(proc.returncode)
+        execution_enabled = _direct_execution_enabled() if backend == "direct" else _scheduler_execution_enabled()
 
-                    max_bytes = _direct_log_capture_max_bytes()
-                    raw_stdout = proc.stdout or ""
-                    raw_stderr = proc.stderr or ""
-                    stdout_text = raw_stdout[:max_bytes]
-                    stderr_text = raw_stderr[:max_bytes]
-
-                    _write_job_log_text(server_job_id, "stdout", stdout_text)
-                    _write_job_log_text(server_job_id, "stderr", stderr_text)
-
-                    log_capture = {
-                        "stdout": True,
-                        "stderr": True,
-                        "truncated_stdout": len(raw_stdout) > len(stdout_text),
-                        "truncated_stderr": len(raw_stderr) > len(stderr_text),
-                        "max_bytes": max_bytes,
-                    }
-
-                    state = "succeeded" if proc.returncode == 0 else "failed"
-
-        if plan["allowed"] and backend != "direct" and _scheduler_execution_enabled():
-            cmd = plan.get("command")
-            if not isinstance(cmd, list) or not cmd or cmd[0] != "sbatch":
+        execute_submission = getattr(backend_ops, "execute_submission", None)
+        if execute_submission:
+            try:
+                updates = execute_submission(_runtime_dir(), server_job_id, plan, execution_enabled)
+            except ValueError:
                 raise HTTPException(status_code=500, detail="server_error")
 
-            try:
-                proc = subprocess.run(
-                    cmd,
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                    timeout=10,
+            if isinstance(updates, dict):
+                scheduler_job_id = updates.get("scheduler_job_id") if isinstance(updates.get("scheduler_job_id"), str) else scheduler_job_id
+                exit_code = updates.get("exit_code") if isinstance(updates.get("exit_code"), int) else exit_code
+                direct_scope_name = (
+                    updates.get("direct_scope_name") if isinstance(updates.get("direct_scope_name"), str) else direct_scope_name
                 )
-            except (subprocess.TimeoutExpired, subprocess.CalledProcessError, FileNotFoundError):
-                # Persist the request, but fail closed to the client.
-                state = "failed"
-            else:
-                scheduler_job_id = _parse_sbatch_submission_stdout(proc.stdout)
-                if scheduler_job_id:
-                    state = "submitted"
-                else:
-                    state = "failed"
+                if isinstance(updates.get("log_capture"), dict):
+                    log_capture = updates["log_capture"]
+                if isinstance(updates.get("state"), str) and updates.get("state"):
+                    state = updates["state"]
+
 
         record = {
             "server_job_id": server_job_id,
@@ -641,19 +599,34 @@ def create_app() -> FastAPI:
         if not cmd:
             raise HTTPException(status_code=400, detail="bad_request")
 
-        try:
-            subprocess.run(
-                cmd,
-                check=True,
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-        except (subprocess.TimeoutExpired, subprocess.CalledProcessError, FileNotFoundError):
-            record["state"] = "failed"
-            record["cancel_failed_at"] = utc_now_rfc3339()
-            write_job_record(_runtime_dir(), record)
-            raise HTTPException(status_code=500, detail="server_error")
+        execute_cancel = getattr(backend_ops, "execute_cancel", None)
+
+        # Backward-compatible fallback for tests/stubs: if backend ops does not provide
+        # an execution function, execute the cancel command directly here.
+        if not execute_cancel:
+            try:
+                subprocess.run(
+                    cmd,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+            except (subprocess.TimeoutExpired, subprocess.CalledProcessError, FileNotFoundError):
+                record["state"] = "failed"
+                record["cancel_failed_at"] = utc_now_rfc3339()
+                write_job_record(_runtime_dir(), record)
+                raise HTTPException(status_code=500, detail="server_error")
+        else:
+            try:
+                execute_cancel(record, _scheduler_execution_enabled() if backend == "slurm" else _direct_cancel_enabled())
+            except ValueError:
+                raise HTTPException(status_code=400, detail="bad_request")
+            except Exception:
+                record["state"] = "failed"
+                record["cancel_failed_at"] = utc_now_rfc3339()
+                write_job_record(_runtime_dir(), record)
+                raise HTTPException(status_code=500, detail="server_error")
 
         record["state"] = "canceled"
         record["canceled_at"] = utc_now_rfc3339()

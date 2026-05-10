@@ -76,6 +76,17 @@ def build_scancel_command(job_id: str) -> list[str]:
     return ["scancel", str(job_id)]
 
 
+def parse_sbatch_submission_stdout(stdout: str) -> str | None:
+    """Parse sbatch stdout to extract the scheduler job id."""
+
+    import re
+
+    m = re.search(r"Submitted batch job\s+(\d+)", str(stdout))
+    if not m:
+        return None
+    return m.group(1)
+
+
 def build_submission_plan(spec: dict[str, Any], drain_state_path: Path) -> dict[str, Any]:
     """Build a submission plan for a spec.
 

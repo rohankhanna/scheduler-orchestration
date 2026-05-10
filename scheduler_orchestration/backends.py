@@ -6,13 +6,22 @@ from typing import Any, Callable
 
 import subprocess
 
+import os
+
 from scheduler_orchestration.direct_backend import (
     build_direct_submission_plan,
     build_systemctl_cancel_direct_command,
+    build_systemd_run_direct_command,
     direct_scope_name_from_record,
 )
 from scheduler_orchestration.direct_observer import refresh_direct_record_from_systemctl_show
-from scheduler_orchestration.slurm_adapter import build_scancel_command, build_squeue_job_query_command, build_submission_plan
+from scheduler_orchestration.job_ledger import utc_now_rfc3339, write_job_record
+from scheduler_orchestration.slurm_adapter import (
+    build_scancel_command,
+    build_squeue_job_query_command,
+    build_submission_plan,
+    parse_sbatch_submission_stdout,
+)
 from scheduler_orchestration.slurm_observer import parse_squeue_output, refresh_slurm_records_from_squeue_list
 
 
@@ -25,6 +34,13 @@ class BackendOps:
 
     # Return cancellation argv for a record, or None if not applicable.
     build_cancel_command: Callable[[dict[str, Any]], list[str] | None]
+
+    # Execute a submission plan. Should return a dict of record updates
+    # (for example: scheduler_job_id, exit_code, state, log_capture).
+    execute_submission: Callable[[Path, str, dict[str, Any], bool], dict[str, Any]] | None = None
+
+    # Execute cancellation for a record.
+    execute_cancel: Callable[[dict[str, Any], bool], None] | None = None
 
     # Refresh a single job record best-effort. Should not raise for observation failures.
     refresh_job: Callable[[Path, dict[str, Any], bool], dict[str, Any]] | None = None
@@ -99,6 +115,49 @@ def slurm_backend_ops(drain_state_path: Path) -> BackendOps:
         except Exception:
             return
 
+    def _execute_submission(runtime_dir: Path, server_job_id: str, plan: dict[str, Any], execution_enabled: bool) -> dict[str, Any]:
+        if not execution_enabled:
+            return {}
+        if not bool(plan.get("allowed")):
+            return {}
+
+        cmd = plan.get("command")
+        if not isinstance(cmd, list) or not cmd or cmd[0] != "sbatch":
+            raise ValueError("bad_plan")
+
+        try:
+            proc = subprocess.run(
+                cmd,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except (subprocess.TimeoutExpired, subprocess.CalledProcessError, FileNotFoundError):
+            return {"state": "failed"}
+
+        scheduler_job_id = parse_sbatch_submission_stdout(proc.stdout)
+        if not scheduler_job_id:
+            return {"state": "failed"}
+
+        return {"scheduler_job_id": scheduler_job_id, "state": "submitted"}
+
+    def _execute_cancel(record: dict[str, Any], execution_enabled: bool) -> None:
+        if not execution_enabled:
+            raise ValueError("cancel_disabled")
+
+        cmd = _cancel(record)
+        if not cmd:
+            raise ValueError("bad_request")
+
+        subprocess.run(
+            cmd,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
     def _get_logs(runtime_dir: Path, record: dict[str, Any], server_job_id: str) -> dict[str, str] | None:
         return None
 
@@ -106,6 +165,8 @@ def slurm_backend_ops(drain_state_path: Path) -> BackendOps:
         name="slurm",
         build_plan=lambda spec, _: _plan(spec, drain_state_path),
         build_cancel_command=_cancel,
+        execute_submission=_execute_submission,
+        execute_cancel=_execute_cancel,
         refresh_job=_refresh_one,
         bulk_refresh=_bulk_refresh,
         get_logs=_get_logs,
@@ -178,6 +239,87 @@ def direct_backend_ops(
             except Exception:
                 continue
 
+    def _direct_log_capture_max_bytes() -> int:
+        raw = os.environ.get("SCHED_ORCH_DIRECT_LOG_CAPTURE_MAX_BYTES", "65536").strip()
+        try:
+            n = int(raw)
+        except ValueError:
+            return 65536
+
+        if n < 0:
+            return 0
+        if n > 10 * 1024 * 1024:
+            return 10 * 1024 * 1024
+        return n
+
+    def _write_job_log_text(runtime_dir: Path, server_job_id: str, stream: str, text: str) -> None:
+        path = runtime_dir / "scheduler-job-ledger" / "logs" / server_job_id / f"{stream}.txt"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        try:
+            path.chmod(0o600)
+        except PermissionError:
+            pass
+
+    def _execute_submission(runtime_dir: Path, server_job_id: str, plan: dict[str, Any], execution_enabled: bool) -> dict[str, Any]:
+        if not execution_enabled:
+            return {}
+        if not bool(plan.get("allowed")):
+            return {}
+
+        payload_argv = plan.get("command")
+        if not isinstance(payload_argv, list) or not payload_argv or not all(isinstance(x, str) for x in payload_argv):
+            return {"state": "failed"}
+
+        cmd = build_systemd_run_direct_command(server_job_id, payload_argv)
+        try:
+            proc = subprocess.run(
+                cmd,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            return {"exit_code": None, "state": "failed"}
+
+        max_bytes = _direct_log_capture_max_bytes()
+        raw_stdout = proc.stdout or ""
+        raw_stderr = proc.stderr or ""
+        stdout_text = raw_stdout[:max_bytes]
+        stderr_text = raw_stderr[:max_bytes]
+
+        _write_job_log_text(runtime_dir, server_job_id, "stdout", stdout_text)
+        _write_job_log_text(runtime_dir, server_job_id, "stderr", stderr_text)
+
+        return {
+            "exit_code": int(proc.returncode),
+            "log_capture": {
+                "stdout": True,
+                "stderr": True,
+                "truncated_stdout": len(raw_stdout) > len(stdout_text),
+                "truncated_stderr": len(raw_stderr) > len(stderr_text),
+                "max_bytes": max_bytes,
+            },
+            "state": "succeeded" if proc.returncode == 0 else "failed",
+        }
+
+    def _execute_cancel(record: dict[str, Any], execution_enabled: bool) -> None:
+        if not execution_enabled:
+            raise ValueError("cancel_disabled")
+
+        cmd = _cancel(record)
+        if not cmd:
+            raise ValueError("bad_request")
+
+        subprocess.run(
+            cmd,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
     def _get_logs(runtime_dir: Path, record: dict[str, Any], server_job_id: str) -> dict[str, str] | None:
         # Direct backend captures stdout/stderr into the runtime ledger logs directory.
         logs_dir = runtime_dir / "scheduler-job-ledger" / "logs" / server_job_id
@@ -196,6 +338,8 @@ def direct_backend_ops(
         name="direct",
         build_plan=lambda spec, _: _plan(spec, drain_state_path),
         build_cancel_command=_cancel,
+        execute_submission=_execute_submission,
+        execute_cancel=_execute_cancel,
         refresh_job=_refresh_one,
         bulk_refresh=_bulk_refresh,
         get_logs=_get_logs,
