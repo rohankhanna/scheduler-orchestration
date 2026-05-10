@@ -6,8 +6,11 @@ import re
 import subprocess
 import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from scheduler_orchestration.api_keyring import check_api_key_against_keyring
 
 from fastapi import FastAPI, Header, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
@@ -69,14 +72,47 @@ def _read_job_log_text(server_job_id: str, stream: str) -> str | None:
     return path.read_text(encoding="utf-8")
 
 
+def _api_keyring_path() -> Path:
+    configured = os.environ.get("SCHED_ORCH_API_KEYRING_PATH")
+    if configured:
+        return Path(configured)
+    return _runtime_dir() / "auth" / "api_keys.json"
+
+
+def _expired_api_key_message() -> str:
+    return (
+        "API key expired. Regenerate a local key with: "
+        "python -m scheduler_orchestration.keyring mint --ttl 30d --label <name>"
+    )
+
+
 def _require_api_key(x_api_key: str | None) -> None:
     expected = os.environ.get("SCHED_ORCH_API_KEY")
-    if not expected:
-        # Fail closed: server should not run without an explicit key.
+    keyring_path = _api_keyring_path()
+
+    if not expected and not keyring_path.exists():
+        # Fail closed: server should not run without an explicit auth mechanism.
         raise HTTPException(status_code=500, detail="server_misconfigured")
 
-    if not x_api_key or not hmac.compare_digest(x_api_key, expected):
+    if not x_api_key:
         raise HTTPException(status_code=401, detail="unauthorized")
+
+    # Legacy single-key auth (still supported).
+    if expected and hmac.compare_digest(x_api_key, expected):
+        return
+
+    # Keyring auth.
+    if keyring_path.exists():
+        result = check_api_key_against_keyring(keyring_path, x_api_key, now=datetime.now(timezone.utc))
+        if result.ok:
+            return
+        if result.expired:
+            raise HTTPException(
+                status_code=401,
+                detail={"message": _expired_api_key_message()},
+            )
+
+    raise HTTPException(status_code=401, detail="unauthorized")
 
 
 def _parse_sbatch_submission_stdout(stdout: str) -> str | None:
@@ -184,9 +220,12 @@ def _terminal_job_states() -> set[str]:
 
 
 def create_app() -> FastAPI:
-    # Fail closed: do not create an app without an explicit API key.
-    if not os.environ.get("SCHED_ORCH_API_KEY"):
-        raise RuntimeError("Missing required environment variable: SCHED_ORCH_API_KEY")
+    # Fail closed: require an explicit auth mechanism.
+    if not os.environ.get("SCHED_ORCH_API_KEY") and not _api_keyring_path().exists():
+        raise RuntimeError(
+            "Missing auth configuration: set SCHED_ORCH_API_KEY or create a keyring at "
+            f"{_api_keyring_path()} (or set SCHED_ORCH_API_KEYRING_PATH)"
+        )
 
     def _startup_reconcile_ledger_best_effort() -> None:
         if not _startup_reconcile_enabled():
@@ -248,7 +287,14 @@ def create_app() -> FastAPI:
     def _handle_http_exception(request: Request, exc: HTTPException) -> JSONResponse:
         # Security best practice: stable, non-leaky error bodies.
         code = _error_code_for_http(exc.status_code)
-        return JSONResponse(status_code=exc.status_code, content={"error": code})
+        payload: dict[str, Any] = {"error": code}
+
+        if isinstance(exc.detail, dict):
+            message = exc.detail.get("message")
+            if isinstance(message, str) and message.strip():
+                payload["message"] = message
+
+        return JSONResponse(status_code=exc.status_code, content=payload)
 
     @app.exception_handler(RequestValidationError)
     def _handle_validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:

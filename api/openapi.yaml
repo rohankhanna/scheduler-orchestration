@@ -348,6 +348,9 @@ components:
       properties:
         error:
           type: string
+        message:
+          type: string
+          description: Optional human-readable message (for example, key expiration regeneration instructions).
     SchedulerJobSpec:
       type: object
       additionalProperties: false
