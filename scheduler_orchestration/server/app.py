@@ -235,6 +235,23 @@ def _terminal_job_states() -> set[str]:
     return {"blocked", "failed", "canceled", "succeeded"}
 
 
+def _execution_backend_for_record(record: dict[str, Any]) -> str | None:
+    # Backward-compatibility for older ledger entries.
+    backend = record.get("execution_backend")
+    if isinstance(backend, str) and backend.strip():
+        return backend.strip().lower()
+
+    scheduler_job_id = record.get("scheduler_job_id")
+    if isinstance(scheduler_job_id, str) and scheduler_job_id.strip():
+        return "slurm"
+
+    scope_name = record.get("direct_scope_name")
+    if isinstance(scope_name, str) and scope_name.strip():
+        return "direct"
+
+    return None
+
+
 def create_app() -> FastAPI:
     # Fail closed: require an explicit auth mechanism.
     if not os.environ.get("SCHED_ORCH_API_KEY") and not _api_keyring_path().exists():
@@ -363,6 +380,8 @@ def create_app() -> FastAPI:
             backend,
             drain_state_path=_drain_state_path(),
             direct_payload_execution_enabled=_direct_payload_execution_enabled(),
+            direct_refresh_enabled=_direct_refresh_enabled(),
+            direct_state_inference_enabled=_direct_state_inference_enabled(),
         )
         if not backend_ops:
             raise HTTPException(status_code=400, detail="bad_request")
@@ -484,54 +503,23 @@ def create_app() -> FastAPI:
             max_jobs = _bulk_refresh_max_jobs()
             if max_jobs > 0:
                 try:
-                    paths = list_job_paths(runtime_dir)
-
+                    records = [read_job_record_from_path(path) for path in list_job_paths(runtime_dir)]
                     terminal_states = _terminal_job_states()
 
-                    # Refresh slurm jobs (one squeue call).
-                    slurm_candidates: list[dict[str, Any]] = []
-                    for path in paths:
-                        record = read_job_record_from_path(path)
-                        if record.get("execution_backend") != "slurm":
+                    backend_names = sorted({str(r.get("execution_backend") or "").strip().lower() for r in records})
+                    for backend_name in backend_names:
+                        if not backend_name:
                             continue
 
-                        scheduler_job_id = record.get("scheduler_job_id")
-                        if not isinstance(scheduler_job_id, str) or not scheduler_job_id.strip():
-                            continue
-
-                        if record.get("state") in terminal_states:
-                            continue
-
-                        slurm_candidates.append(record)
-                        if len(slurm_candidates) >= max_jobs:
-                            break
-
-                    refresh_slurm_records_from_squeue_list(runtime_dir, slurm_candidates)
-
-                    # Refresh direct jobs (bounded; one systemctl call per job).
-                    if _direct_refresh_enabled():
-                        direct_candidates: list[dict[str, Any]] = []
-                        for path in paths:
-                            record = read_job_record_from_path(path)
-                            if record.get("execution_backend") != "direct":
-                                continue
-
-                            if record.get("state") in terminal_states:
-                                continue
-
-                            direct_candidates.append(record)
-                            if len(direct_candidates) >= max_jobs:
-                                break
-
-                        for record in direct_candidates:
-                            try:
-                                refresh_direct_record_from_systemctl_show(
-                                    runtime_dir,
-                                    record,
-                                    direct_state_inference_enabled=_direct_state_inference_enabled(),
-                                )
-                            except (subprocess.TimeoutExpired, FileNotFoundError):
-                                continue
+                        backend_ops = get_backend_ops(
+                            backend_name,
+                            drain_state_path=_drain_state_path(),
+                            direct_payload_execution_enabled=_direct_payload_execution_enabled(),
+                            direct_refresh_enabled=_direct_refresh_enabled(),
+                            direct_state_inference_enabled=_direct_state_inference_enabled(),
+                        )
+                        if backend_ops and backend_ops.bulk_refresh:
+                            backend_ops.bulk_refresh(runtime_dir, records, max_jobs, terminal_states)
                 except Exception:
                     # Best-effort only: do not fail the list endpoint for refresh failures.
                     pass
@@ -567,46 +555,23 @@ def create_app() -> FastAPI:
         if not record:
             raise HTTPException(status_code=404, detail="not_found")
 
-        backend = record.get("execution_backend")
+        backend = _execution_backend_for_record(record)
 
-        scheduler_job_id = record.get("scheduler_job_id")
-        if isinstance(scheduler_job_id, str) and scheduler_job_id.strip():
-            cmd = build_squeue_job_query_command(scheduler_job_id)
+        backend_ops = get_backend_ops(
+            str(backend or ""),
+            drain_state_path=_drain_state_path(),
+            direct_payload_execution_enabled=_direct_payload_execution_enabled(),
+            direct_refresh_enabled=_direct_refresh_enabled(),
+            direct_state_inference_enabled=_direct_state_inference_enabled(),
+        )
+        if backend_ops and backend_ops.refresh_job:
             try:
-                proc = subprocess.run(
-                    cmd,
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                    timeout=5,
-                )
-            except (subprocess.TimeoutExpired, subprocess.CalledProcessError, FileNotFoundError):
-                # Do not fail the request; return the durable record as-is.
-                pass
-            else:
-                items = parse_squeue_output(proc.stdout)
-                if items:
-                    record["scheduler_state"] = items[0].get("state")
-                    if refresh:
-                        record["last_refresh_at"] = utc_now_rfc3339()
-                        write_job_record(_runtime_dir(), record)
-
-        if backend == "direct" and refresh:
-            if not _direct_refresh_enabled():
+                backend_ops.refresh_job(_runtime_dir(), record, refresh_requested=refresh)
+            except ValueError:
+                # Backend uses ValueError for request-level policy violations.
                 raise HTTPException(status_code=400, detail="bad_request")
-
-            scope_name = direct_scope_name_from_record(record)
-            if not scope_name:
-                raise HTTPException(status_code=400, detail="bad_request")
-
-            try:
-                refresh_direct_record_from_systemctl_show(
-                    _runtime_dir(),
-                    record,
-                    direct_state_inference_enabled=_direct_state_inference_enabled(),
-                )
-            except (subprocess.TimeoutExpired, FileNotFoundError):
-                # Best-effort; do not fail the request for observation errors.
+            except Exception:
+                # Best-effort; do not fail request for observation errors.
                 pass
 
         return {
@@ -627,20 +592,27 @@ def create_app() -> FastAPI:
         if not record:
             raise HTTPException(status_code=404, detail="not_found")
 
-        backend = record.get("execution_backend")
-        if backend != "direct":
+        backend = _execution_backend_for_record(record)
+
+        backend_ops = get_backend_ops(
+            str(backend or ""),
+            drain_state_path=_drain_state_path(),
+            direct_payload_execution_enabled=_direct_payload_execution_enabled(),
+            direct_refresh_enabled=_direct_refresh_enabled(),
+            direct_state_inference_enabled=_direct_state_inference_enabled(),
+        )
+        if not backend_ops or not backend_ops.get_logs:
             raise HTTPException(status_code=400, detail="bad_request")
 
-        stdout = _read_job_log_text(server_job_id, "stdout")
-        stderr = _read_job_log_text(server_job_id, "stderr")
-        if stdout is None and stderr is None:
+        logs = backend_ops.get_logs(_runtime_dir(), record, server_job_id=server_job_id)
+        if not logs:
             raise HTTPException(status_code=404, detail="not_found")
 
         return {
             "server_job_id": server_job_id,
-            "execution_backend": backend,
-            "stdout": stdout or "",
-            "stderr": stderr or "",
+            "execution_backend": str(backend or ""),
+            "stdout": str(logs.get("stdout") or ""),
+            "stderr": str(logs.get("stderr") or ""),
         }
 
     @app.delete("/v1/jobs/{server_job_id}")
@@ -654,7 +626,7 @@ def create_app() -> FastAPI:
         if not record:
             raise HTTPException(status_code=404, detail="not_found")
 
-        backend = record.get("execution_backend")
+        backend = _execution_backend_for_record(record)
 
         # Conservative policy: cancellation is an execution/control action, so keep it gated.
         if backend == "slurm" and not _scheduler_execution_enabled():
@@ -666,6 +638,8 @@ def create_app() -> FastAPI:
             str(backend or ""),
             drain_state_path=_drain_state_path(),
             direct_payload_execution_enabled=_direct_payload_execution_enabled(),
+            direct_refresh_enabled=_direct_refresh_enabled(),
+            direct_state_inference_enabled=_direct_state_inference_enabled(),
         )
         if not backend_ops:
             raise HTTPException(status_code=400, detail="bad_request")

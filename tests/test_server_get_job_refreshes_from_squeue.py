@@ -45,9 +45,9 @@ def test_get_job_with_scheduler_job_id_queries_squeue_and_updates_detail(tmp_pat
             stderr="",
         )
 
-    import scheduler_orchestration.server.app as app_mod
+    import scheduler_orchestration.backends as backends_mod
 
-    monkeypatch.setattr(app_mod.subprocess, "run", fake_run, raising=True)
+    monkeypatch.setattr(backends_mod.subprocess, "run", fake_run, raising=True)
 
     from scheduler_orchestration.server.app import create_app
 
