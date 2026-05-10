@@ -32,6 +32,7 @@ from scheduler_orchestration.slurm_adapter import (
     build_squeue_job_query_command,
     build_squeue_list_command,
 )
+from scheduler_orchestration.slurm_observer import parse_squeue_output, refresh_slurm_records_from_squeue_list
 
 
 def _runtime_dir() -> Path:
@@ -75,34 +76,6 @@ def _require_api_key(x_api_key: str | None) -> None:
 
     if not x_api_key or not hmac.compare_digest(x_api_key, expected):
         raise HTTPException(status_code=401, detail="unauthorized")
-
-
-def _parse_squeue_output(stdout: str) -> list[dict[str, str]]:
-    items: list[dict[str, str]] = []
-    for raw_line in stdout.splitlines():
-        line = raw_line.strip()
-        if not line:
-            continue
-
-        parts = line.split("|", 7)
-        if len(parts) != 8:
-            continue
-
-        job_id, name, state, elapsed, nodes, cpus, memory, reason = [p.strip() for p in parts]
-        items.append(
-            {
-                "job_id": job_id,
-                "name": name,
-                "state": state,
-                "time": elapsed,
-                "nodes": nodes,
-                "cpus": cpus,
-                "memory": memory,
-                "reason": reason,
-            }
-        )
-
-    return items
 
 
 def _parse_sbatch_submission_stdout(stdout: str) -> str | None:
@@ -256,34 +229,6 @@ def _terminal_job_states() -> set[str]:
     return {"blocked", "failed", "canceled", "succeeded"}
 
 
-def _refresh_slurm_records_from_squeue_list(runtime_dir: Path, records: list[dict[str, Any]]) -> None:
-    if not records:
-        return
-
-    cmd = build_squeue_list_command()
-    proc = subprocess.run(
-        cmd,
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=5,
-    )
-
-    state_by_job_id: dict[str, str] = {}
-    for item in _parse_squeue_output(proc.stdout):
-        job_id = str(item.get("job_id", "")).strip()
-        state = str(item.get("state", "")).strip()
-        if job_id and state:
-            state_by_job_id[job_id] = state
-
-    now = utc_now_rfc3339()
-    for record in records:
-        scheduler_job_id = str(record.get("scheduler_job_id", "")).strip()
-        record["scheduler_state"] = state_by_job_id.get(scheduler_job_id, "not_in_queue")
-        record["last_refresh_at"] = now
-        write_job_record(runtime_dir, record)
-
-
 def _refresh_direct_record_from_systemctl_show(runtime_dir: Path, record: dict[str, Any]) -> None:
     scope_name = direct_scope_name_from_record(record)
     if not scope_name:
@@ -361,7 +306,7 @@ def create_app() -> FastAPI:
                 if len(candidates) >= max_jobs:
                     break
 
-            _refresh_slurm_records_from_squeue_list(runtime_dir, candidates)
+            refresh_slurm_records_from_squeue_list(runtime_dir, candidates)
         except Exception:
             return
 
@@ -409,7 +354,7 @@ def create_app() -> FastAPI:
         except (subprocess.TimeoutExpired, subprocess.CalledProcessError, FileNotFoundError):
             raise HTTPException(status_code=500, detail="server_error")
 
-        return {"items": _parse_squeue_output(proc.stdout)}
+        return {"items": parse_squeue_output(proc.stdout)}
 
     @app.post("/v1/drain")
     def set_drain(
@@ -583,7 +528,7 @@ def create_app() -> FastAPI:
                         if len(slurm_candidates) >= max_jobs:
                             break
 
-                    _refresh_slurm_records_from_squeue_list(runtime_dir, slurm_candidates)
+                    refresh_slurm_records_from_squeue_list(runtime_dir, slurm_candidates)
 
                     # Refresh direct jobs (bounded; one systemctl call per job).
                     if _direct_refresh_enabled():
@@ -657,7 +602,7 @@ def create_app() -> FastAPI:
                 # Do not fail the request; return the durable record as-is.
                 pass
             else:
-                items = _parse_squeue_output(proc.stdout)
+                items = parse_squeue_output(proc.stdout)
                 if items:
                     record["scheduler_state"] = items[0].get("state")
                     if refresh:
