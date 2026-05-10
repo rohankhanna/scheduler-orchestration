@@ -1,5 +1,6 @@
 import hashlib
 import json
+from pathlib import Path
 import time
 
 
@@ -73,3 +74,26 @@ def test_unknown_api_key_keeps_generic_unauthorized_error(tmp_path, monkeypatch)
     r = client.get("/v1/queue", headers={"X-API-Key": "wrong-key"})
     assert r.status_code == 401
     assert r.json() == {"error": "unauthorized"}
+
+
+def test_expired_key_message_default_source_is_repo_doc_markdown(tmp_path, monkeypatch):
+    # This test is intentionally "policy-like": it ensures the server's default
+    # expired-key regeneration message is sourced from the repo documentation file,
+    # so that doc edits propagate to runtime behavior.
+
+    repo_doc = Path("docs/auth/expired_api_key.md")
+    assert repo_doc.exists(), "docs/auth/expired_api_key.md must exist"
+
+    expected_message = repo_doc.read_text(encoding="utf-8").strip()
+    assert expected_message, "expired_api_key.md must not be empty"
+
+    # No override env var: server must use the repo doc by default.
+    monkeypatch.delenv("SCHED_ORCH_EXPIRED_API_KEY_MESSAGE_MD_PATH", raising=False)
+
+    client = _client(tmp_path, monkeypatch, key="expired-key", expires_at="2000-01-01T00:00:00Z")
+
+    r = client.get("/v1/queue", headers={"X-API-Key": "expired-key"})
+    assert r.status_code == 401
+    body = r.json()
+    assert body["error"] == "unauthorized"
+    assert body.get("message") == expected_message
