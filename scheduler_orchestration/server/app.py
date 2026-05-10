@@ -19,11 +19,9 @@ from fastapi.responses import JSONResponse
 from scheduler_orchestration.backends import get_backend_ops
 from scheduler_orchestration.direct_backend import (
     build_systemd_run_direct_command,
-    direct_scope_name_from_record,
     direct_systemd_scope_name,
 )
-from scheduler_orchestration.direct_observer import refresh_direct_record_from_systemctl_show
-from scheduler_orchestration.drain_state import is_drain_enabled, set_drain_mode
+from scheduler_orchestration.drain_state import set_drain_mode
 from scheduler_orchestration.job_ledger import (
     list_job_paths,
     read_job_record,
@@ -32,11 +30,8 @@ from scheduler_orchestration.job_ledger import (
     utc_now_rfc3339,
     write_job_record,
 )
-from scheduler_orchestration.slurm_adapter import (
-    build_squeue_job_query_command,
-    build_squeue_list_command,
-)
-from scheduler_orchestration.slurm_observer import parse_squeue_output, refresh_slurm_records_from_squeue_list
+from scheduler_orchestration.slurm_adapter import build_squeue_list_command
+from scheduler_orchestration.slurm_observer import parse_squeue_output
 
 
 def _runtime_dir() -> Path:
@@ -277,24 +272,22 @@ def create_app() -> FastAPI:
 
             terminal_states = _terminal_job_states()
 
-            candidates: list[dict[str, Any]] = []
-            for path in paths:
-                record = read_job_record_from_path(path)
-                if record.get("execution_backend") != "slurm":
+            records = [read_job_record_from_path(path) for path in paths]
+
+            backend_names = sorted({str(r.get("execution_backend") or "").strip().lower() for r in records})
+            for backend_name in backend_names:
+                if not backend_name:
                     continue
 
-                scheduler_job_id = record.get("scheduler_job_id")
-                if not isinstance(scheduler_job_id, str) or not scheduler_job_id.strip():
-                    continue
-
-                if record.get("state") in terminal_states:
-                    continue
-
-                candidates.append(record)
-                if len(candidates) >= max_jobs:
-                    break
-
-            refresh_slurm_records_from_squeue_list(runtime_dir, candidates)
+                backend_ops = get_backend_ops(
+                    backend_name,
+                    drain_state_path=_drain_state_path(),
+                    direct_payload_execution_enabled=_direct_payload_execution_enabled(),
+                    direct_refresh_enabled=_direct_refresh_enabled(),
+                    direct_state_inference_enabled=_direct_state_inference_enabled(),
+                )
+                if backend_ops and backend_ops.bulk_refresh:
+                    backend_ops.bulk_refresh(runtime_dir, records, max_jobs, terminal_states)
         except Exception:
             return
 
