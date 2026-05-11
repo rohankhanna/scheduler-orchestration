@@ -3,8 +3,8 @@ from __future__ import annotations
 import subprocess
 from typing import Any
 
-from scheduler_orchestration.job_ledger import utc_now_rfc3339, write_job_record
-from scheduler_orchestration.slurm_adapter import build_squeue_list_command
+from dispatch.job_ledger import utc_now_rfc3339, write_job_record
+from dispatch.slurm_adapter import build_squeue_list_command
 
 
 def parse_squeue_output(stdout: str) -> list[dict[str, str]]:

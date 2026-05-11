@@ -10,8 +10,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from scheduler_orchestration.api_keyring import check_api_key_against_keyring
-from scheduler_orchestration.auth_store import (
+from dispatch.api_keyring import check_api_key_against_keyring
+from dispatch.auth_store import (
     authenticate_access_token,
     check_project_api_key,
     create_project,
@@ -26,13 +26,13 @@ from fastapi import FastAPI, Header, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from scheduler_orchestration.backends import get_backend_ops
-from scheduler_orchestration.direct_backend import (
+from dispatch.backends import get_backend_ops
+from dispatch.direct_backend import (
     build_systemd_run_direct_command,
     direct_systemd_scope_name,
 )
-from scheduler_orchestration.drain_state import set_drain_mode
-from scheduler_orchestration.job_ledger import (
+from dispatch.drain_state import set_drain_mode
+from dispatch.job_ledger import (
     list_job_paths,
     read_job_record,
     read_job_record_from_path,
@@ -40,8 +40,8 @@ from scheduler_orchestration.job_ledger import (
     utc_now_rfc3339,
     write_job_record,
 )
-from scheduler_orchestration.slurm_adapter import build_squeue_list_command
-from scheduler_orchestration.slurm_observer import parse_squeue_output
+from dispatch.slurm_adapter import build_squeue_list_command
+from dispatch.slurm_observer import parse_squeue_output
 
 
 def _runtime_dir() -> Path:
@@ -104,7 +104,7 @@ def _expired_api_key_message() -> str:
             continue
 
     # Last-resort fallback if the markdown file is unavailable.
-    return "API key expired. Regenerate a local key with: python -m scheduler_orchestration.keyring mint --ttl 30d --label <name>"
+    return "API key expired. Regenerate a local key with: python -m dispatch.keyring mint --ttl 30d --label example-client"
 
 
 def _require_api_key(x_api_key: str | None) -> None:

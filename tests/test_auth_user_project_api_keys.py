@@ -6,7 +6,7 @@ def test_signup_login_create_project_and_mint_key_then_submit_job(tmp_path, monk
     # Keep scheduler execution disabled (dry-run) for test.
     monkeypatch.setenv("SCHED_ORCH_ENABLE_SCHEDULER_EXEC", "0")
 
-    from scheduler_orchestration.server.app import create_app
+    from dispatch.server.app import create_app
 
     client = TestClient(create_app())
 

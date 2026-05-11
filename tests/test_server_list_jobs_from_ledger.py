@@ -49,7 +49,7 @@ def test_list_jobs_reads_from_ledger_and_returns_most_recent_first(tmp_path, mon
         encoding="utf-8",
     )
 
-    from scheduler_orchestration.server.app import create_app
+    from dispatch.server.app import create_app
 
     client = TestClient(create_app())
 

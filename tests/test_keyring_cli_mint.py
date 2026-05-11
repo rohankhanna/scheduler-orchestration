@@ -11,7 +11,7 @@ def test_keyring_cli_mint_writes_keyring_and_prints_key(tmp_path, monkeypatch):
         [
             sys.executable,
             "-m",
-            "scheduler_orchestration.keyring",
+            "dispatch.keyring",
             "mint",
             "--ttl",
             "1d",

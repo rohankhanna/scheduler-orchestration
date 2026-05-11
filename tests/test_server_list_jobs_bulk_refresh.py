@@ -6,7 +6,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from scheduler_orchestration.server.app import create_app
+from dispatch.server.app import create_app
 
 
 def _write_job(runtime_dir: Path, server_job_id: str, scheduler_job_id: str) -> None:

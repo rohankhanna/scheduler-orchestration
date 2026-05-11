@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from scheduler_orchestration.drain_state import is_drain_enabled
+from dispatch.drain_state import is_drain_enabled
 
 
 def direct_systemd_scope_name(server_job_id: str) -> str:

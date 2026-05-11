@@ -40,11 +40,11 @@ def test_direct_exec_payload_uses_systemd_run_and_persists_exit_code(tmp_path, m
         calls.append({"args": args, "kwargs": kwargs})
         return CompletedProcess(args=args, returncode=0, stdout="", stderr="")
 
-    import scheduler_orchestration.server.app as app_mod
+    import dispatch.server.app as app_mod
 
     monkeypatch.setattr(app_mod.subprocess, "run", fake_run, raising=True)
 
-    from scheduler_orchestration.server.app import create_app
+    from dispatch.server.app import create_app
 
     client = TestClient(create_app())
 

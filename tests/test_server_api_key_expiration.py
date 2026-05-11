@@ -39,7 +39,7 @@ def _client(tmp_path, monkeypatch, *, key: str, expires_at: str):
     _write_keyring(keyring_path, key=key, expires_at=expires_at)
     monkeypatch.setenv("SCHED_ORCH_API_KEYRING_PATH", str(keyring_path))
 
-    from scheduler_orchestration.server.app import create_app
+    from dispatch.server.app import create_app
 
     return TestClient(create_app())
 
@@ -47,7 +47,7 @@ def _client(tmp_path, monkeypatch, *, key: str, expires_at: str):
 def test_expired_api_key_message_is_loaded_from_markdown_file(tmp_path, monkeypatch):
     md_path = tmp_path / "docs" / "expired_api_key.md"
     md_path.parent.mkdir(parents=True, exist_ok=True)
-    md_text = "API key expired. Regenerate with: python -m scheduler_orchestration.keyring mint --ttl 30d --label my-client\n"
+    md_text = "API key expired. Regenerate with: python -m dispatch.keyring mint --ttl 30d --label my-client\n"
     md_path.write_text(md_text, encoding="utf-8")
     monkeypatch.setenv("SCHED_ORCH_EXPIRED_API_KEY_MESSAGE_MD_PATH", str(md_path))
 

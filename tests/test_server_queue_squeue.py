@@ -6,7 +6,7 @@ from subprocess import CompletedProcess
 import pytest
 from fastapi.testclient import TestClient
 
-from scheduler_orchestration.server.app import create_app
+from dispatch.server.app import create_app
 
 
 def test_queue_calls_squeue_and_parses_items(tmp_path, monkeypatch):
@@ -24,7 +24,7 @@ def test_queue_calls_squeue_and_parses_items(tmp_path, monkeypatch):
         return CompletedProcess(args=args, returncode=0, stdout=stdout, stderr="")
 
     # Patch subprocess.run inside the server module.
-    import scheduler_orchestration.server.app as app_mod
+    import dispatch.server.app as app_mod
 
     monkeypatch.setattr(app_mod.subprocess, "run", fake_run, raising=True)
 

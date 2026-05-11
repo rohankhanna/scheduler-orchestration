@@ -6,7 +6,7 @@ import sys
 from datetime import timedelta
 from pathlib import Path
 
-from scheduler_orchestration.api_keyring import mint_api_key
+from dispatch.api_keyring import mint_api_key
 
 
 def _runtime_dir() -> Path:
@@ -50,7 +50,7 @@ def _parse_ttl(raw: str) -> int:
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="python -m scheduler_orchestration.keyring")
+    p = argparse.ArgumentParser(prog="python -m dispatch.keyring")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     mint = sub.add_parser("mint", help="Mint a new API key into the local keyring")

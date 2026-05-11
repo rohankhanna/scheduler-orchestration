@@ -29,8 +29,8 @@ def test_submit_executes_sbatch_via_backend_layer_subprocess(tmp_path, monkeypat
     monkeypatch.setenv("SCHED_ORCH_RUNTIME_DIR", str(tmp_path))
     monkeypatch.setenv("SCHED_ORCH_ENABLE_SCHEDULER_EXEC", "1")
 
-    import scheduler_orchestration.backends as backends_mod
-    import scheduler_orchestration.server.app as server_app
+    import dispatch.backends as backends_mod
+    import dispatch.server.app as server_app
 
     class ServerSubprocessStub:
         def run(self, *args, **kwargs):
@@ -74,8 +74,8 @@ def test_cancel_executes_scancel_via_backend_layer_subprocess(tmp_path, monkeypa
     monkeypatch.setenv("SCHED_ORCH_RUNTIME_DIR", str(tmp_path))
     monkeypatch.setenv("SCHED_ORCH_ENABLE_SCHEDULER_EXEC", "1")
 
-    import scheduler_orchestration.backends as backends_mod
-    import scheduler_orchestration.server.app as server_app
+    import dispatch.backends as backends_mod
+    import dispatch.server.app as server_app
 
     server_job_id = "server-job-1"
     job_path = tmp_path / "scheduler-job-ledger" / "jobs" / f"{server_job_id}.json"

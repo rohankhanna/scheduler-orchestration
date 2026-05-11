@@ -3,8 +3,8 @@ from __future__ import annotations
 import subprocess
 from typing import Any
 
-from scheduler_orchestration.direct_backend import direct_scope_name_from_record
-from scheduler_orchestration.job_ledger import utc_now_rfc3339, write_job_record
+from dispatch.direct_backend import direct_scope_name_from_record
+from dispatch.job_ledger import utc_now_rfc3339, write_job_record
 
 
 def parse_systemctl_show_properties(stdout: str) -> dict[str, str]:

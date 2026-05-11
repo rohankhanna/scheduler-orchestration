@@ -50,11 +50,11 @@ def test_get_job_refresh_direct_persists_scope_state(monkeypatch, tmp_path: Path
             stderr="",
         )
 
-    import scheduler_orchestration.server.app as app_mod
+    import dispatch.server.app as app_mod
 
     monkeypatch.setattr(app_mod.subprocess, "run", fake_run, raising=True)
 
-    from scheduler_orchestration.server.app import create_app
+    from dispatch.server.app import create_app
 
     client = TestClient(create_app())
     r = client.get(f"/v1/jobs/{server_job_id}?refresh=1", headers={"X-API-Key": "test-key"})
@@ -76,7 +76,7 @@ def test_get_job_refresh_direct_requires_explicit_enable(monkeypatch, tmp_path: 
     server_job_id = "job-123"
     _write_direct_job(tmp_path, server_job_id)
 
-    from scheduler_orchestration.server.app import create_app
+    from dispatch.server.app import create_app
 
     client = TestClient(create_app())
     r = client.get(f"/v1/jobs/{server_job_id}?refresh=1", headers={"X-API-Key": "test-key"})

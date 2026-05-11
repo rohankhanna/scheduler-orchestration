@@ -40,11 +40,11 @@ def test_cancel_job_executes_scancel_and_updates_ledger(tmp_path, monkeypatch):
         calls.append({"args": args, "kwargs": kwargs})
         return CompletedProcess(args=args, returncode=0, stdout="", stderr="")
 
-    import scheduler_orchestration.server.app as app_mod
+    import dispatch.server.app as app_mod
 
     monkeypatch.setattr(app_mod.subprocess, "run", fake_run, raising=True)
 
-    from scheduler_orchestration.server.app import create_app
+    from dispatch.server.app import create_app
 
     client = TestClient(create_app())
 

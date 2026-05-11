@@ -24,7 +24,7 @@ def test_get_job_refresh_is_routed_through_backend_ops(tmp_path, monkeypatch):
     # Gate needs to be enabled for refresh requests to be allowed.
     monkeypatch.setenv("SCHED_ORCH_ENABLE_DIRECT_REFRESH", "1")
 
-    from scheduler_orchestration.server import app as server_app
+    from dispatch.server import app as server_app
 
     calls = {"refresh_job": 0}
 
@@ -55,7 +55,7 @@ def test_get_job_refresh_is_routed_through_backend_ops(tmp_path, monkeypatch):
         "direct_scope_name": "dummy.scope",
     }
 
-    from scheduler_orchestration.job_ledger import write_job_record
+    from dispatch.job_ledger import write_job_record
 
     write_job_record(tmp_path, record)
 
@@ -70,7 +70,7 @@ def test_get_job_logs_is_routed_through_backend_ops(tmp_path, monkeypatch):
     monkeypatch.setenv("SCHED_ORCH_API_KEY", "test-key")
     monkeypatch.setenv("SCHED_ORCH_RUNTIME_DIR", str(tmp_path))
 
-    from scheduler_orchestration.server import app as server_app
+    from dispatch.server import app as server_app
 
     calls = {"get_logs": 0}
 
@@ -99,7 +99,7 @@ def test_get_job_logs_is_routed_through_backend_ops(tmp_path, monkeypatch):
         "spec": _example_spec_dict(),
     }
 
-    from scheduler_orchestration.job_ledger import write_job_record
+    from dispatch.job_ledger import write_job_record
 
     write_job_record(tmp_path, record)
 
@@ -118,7 +118,7 @@ def test_list_jobs_bulk_refresh_is_routed_through_backend_ops(tmp_path, monkeypa
     # Bulk refresh gate for list endpoint.
     monkeypatch.setenv("SCHED_ORCH_ENABLE_BULK_REFRESH", "1")
 
-    from scheduler_orchestration.server import app as server_app
+    from dispatch.server import app as server_app
 
     calls = {"bulk_refresh": 0}
 
@@ -147,7 +147,7 @@ def test_list_jobs_bulk_refresh_is_routed_through_backend_ops(tmp_path, monkeypa
         "direct_scope_name": "dummy.scope",
     }
 
-    from scheduler_orchestration.job_ledger import write_job_record
+    from dispatch.job_ledger import write_job_record
 
     write_job_record(tmp_path, record)
 

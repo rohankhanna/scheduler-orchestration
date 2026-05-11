@@ -8,21 +8,21 @@ import subprocess
 
 import os
 
-from scheduler_orchestration.direct_backend import (
+from dispatch.direct_backend import (
     build_direct_submission_plan,
     build_systemctl_cancel_direct_command,
     build_systemd_run_direct_command,
     direct_scope_name_from_record,
 )
-from scheduler_orchestration.direct_observer import refresh_direct_record_from_systemctl_show
-from scheduler_orchestration.job_ledger import utc_now_rfc3339, write_job_record
-from scheduler_orchestration.slurm_adapter import (
+from dispatch.direct_observer import refresh_direct_record_from_systemctl_show
+from dispatch.job_ledger import utc_now_rfc3339, write_job_record
+from dispatch.slurm_adapter import (
     build_scancel_command,
     build_squeue_job_query_command,
     build_submission_plan,
     parse_sbatch_submission_stdout,
 )
-from scheduler_orchestration.slurm_observer import parse_squeue_output, refresh_slurm_records_from_squeue_list
+from dispatch.slurm_observer import parse_squeue_output, refresh_slurm_records_from_squeue_list
 
 
 @dataclass(frozen=True)
@@ -81,7 +81,7 @@ def slurm_backend_ops(drain_state_path: Path) -> BackendOps:
             if items:
                 record["scheduler_state"] = items[0].get("state")
                 if refresh_requested:
-                    from scheduler_orchestration.job_ledger import utc_now_rfc3339, write_job_record
+                    from dispatch.job_ledger import utc_now_rfc3339, write_job_record
 
                     record["last_refresh_at"] = utc_now_rfc3339()
                     write_job_record(runtime_dir, record)

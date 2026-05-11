@@ -22,8 +22,8 @@ def test_submit_observe_cancel_e2e_uses_fake_backend_ops(tmp_path, monkeypatch):
     monkeypatch.setenv("SCHED_ORCH_ENABLE_BULK_REFRESH", "1")
     monkeypatch.setenv("SCHED_ORCH_ENABLE_DIRECT_CANCEL", "1")
 
-    from scheduler_orchestration.job_ledger import write_job_record
-    from scheduler_orchestration.server import app as server_app
+    from dispatch.job_ledger import write_job_record
+    from dispatch.server import app as server_app
 
     calls = {"submit": 0, "refresh": 0, "cancel": 0}
 

@@ -4,7 +4,7 @@ import pytest
 
 
 def _import_app():
-    from scheduler_orchestration.server.app import create_app
+    from dispatch.server.app import create_app
 
     return create_app()
 

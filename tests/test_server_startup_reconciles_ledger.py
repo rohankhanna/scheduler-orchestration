@@ -6,9 +6,9 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-import scheduler_orchestration.backends
-from scheduler_orchestration.job_ledger import write_job_record
-from scheduler_orchestration.server.app import create_app
+import dispatch.backends
+from dispatch.job_ledger import write_job_record
+from dispatch.server.app import create_app
 
 
 def _write_job(runtime_dir: Path, server_job_id: str, scheduler_job_id: str) -> None:
@@ -62,7 +62,7 @@ def test_startup_reconciles_slurm_jobs_via_backend_ops(monkeypatch, tmp_path: Pa
                 record["last_refresh_at"] = "2026-05-10T00:00:01Z"
                 write_job_record(runtime_dir, record)
 
-    original_factory = scheduler_orchestration.backends.slurm_backend_ops
+    original_factory = dispatch.backends.slurm_backend_ops
 
     def fake_slurm_backend_ops(drain_state_path: Path):
         ops = original_factory(drain_state_path)
@@ -75,7 +75,7 @@ def test_startup_reconciles_slurm_jobs_via_backend_ops(monkeypatch, tmp_path: Pa
             get_logs=ops.get_logs,
         )
 
-    monkeypatch.setattr(scheduler_orchestration.backends, "slurm_backend_ops", fake_slurm_backend_ops)
+    monkeypatch.setattr(dispatch.backends, "slurm_backend_ops", fake_slurm_backend_ops)
 
     def fail_if_squeue_called(cmd, check, capture_output, text, timeout):
         raise AssertionError(f"startup reconcile should route through backend ops, got subprocess.run({cmd!r})")

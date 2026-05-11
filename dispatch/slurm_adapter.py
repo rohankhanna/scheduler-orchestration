@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from scheduler_orchestration.drain_state import is_drain_enabled
+from dispatch.drain_state import is_drain_enabled
 
 
 _DEFAULT_SQUEUE_FORMAT = "%i|%j|%T|%M|%D|%C|%m|%R"

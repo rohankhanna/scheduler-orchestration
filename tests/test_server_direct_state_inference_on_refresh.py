@@ -51,11 +51,11 @@ def test_direct_refresh_can_promote_state_to_running(monkeypatch, tmp_path: Path
             stderr="",
         )
 
-    import scheduler_orchestration.server.app as app_mod
+    import dispatch.server.app as app_mod
 
     monkeypatch.setattr(app_mod.subprocess, "run", fake_run, raising=True)
 
-    from scheduler_orchestration.server.app import create_app
+    from dispatch.server.app import create_app
 
     client = TestClient(create_app())
     r = client.get(f"/v1/jobs/{server_job_id}?refresh=1", headers={"X-API-Key": "test-key"})
@@ -84,11 +84,11 @@ def test_direct_refresh_can_promote_state_to_unknown_when_inactive_without_exit_
             stderr="",
         )
 
-    import scheduler_orchestration.server.app as app_mod
+    import dispatch.server.app as app_mod
 
     monkeypatch.setattr(app_mod.subprocess, "run", fake_run, raising=True)
 
-    from scheduler_orchestration.server.app import create_app
+    from dispatch.server.app import create_app
 
     client = TestClient(create_app())
     r = client.get(f"/v1/jobs/{server_job_id}?refresh=1", headers={"X-API-Key": "test-key"})

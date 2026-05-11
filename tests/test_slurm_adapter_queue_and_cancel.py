@@ -2,7 +2,7 @@ import shlex
 
 
 def test_build_squeue_job_query_command_contains_job_id_and_noheader():
-    from scheduler_orchestration.slurm_adapter import build_squeue_job_query_command
+    from dispatch.slurm_adapter import build_squeue_job_query_command
 
     cmd = build_squeue_job_query_command("12345")
 
@@ -15,7 +15,7 @@ def test_build_squeue_job_query_command_contains_job_id_and_noheader():
 
 
 def test_build_squeue_list_command_has_noheader_and_format():
-    from scheduler_orchestration.slurm_adapter import build_squeue_list_command
+    from dispatch.slurm_adapter import build_squeue_list_command
 
     cmd = build_squeue_list_command()
 
@@ -25,7 +25,7 @@ def test_build_squeue_list_command_has_noheader_and_format():
 
 
 def test_build_scancel_command_targets_job_id():
-    from scheduler_orchestration.slurm_adapter import build_scancel_command
+    from dispatch.slurm_adapter import build_scancel_command
 
     cmd = build_scancel_command("999")
 

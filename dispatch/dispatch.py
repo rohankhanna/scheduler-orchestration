@@ -128,7 +128,7 @@ def _uvicorn_argv(host: str, port: int, reload: bool) -> list[str]:
         _python_exe(),
         "-m",
         "uvicorn",
-        "scheduler_orchestration.server.app:app",
+        "dispatch.server.app:app",
         "--host",
         host,
         "--port",
@@ -381,7 +381,10 @@ def _cmd_bootstrap(args: argparse.Namespace) -> int:
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="python -m scheduler_orchestration.dispatch")
+    p = argparse.ArgumentParser(
+        prog="dispatch",
+        description="Dispatch operator CLI (server lifecycle + bootstrap).",
+    )
     sub = p.add_subparsers(dest="cmd", required=True)
 
     server = sub.add_parser("server", help="Start/stop/status/logs for the Dispatch server")

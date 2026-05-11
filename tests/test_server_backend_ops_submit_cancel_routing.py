@@ -25,7 +25,7 @@ def test_submit_job_builds_plan_via_backend_ops(tmp_path: Path, monkeypatch) -> 
     monkeypatch.setenv("SCHED_ORCH_API_KEY", "test-key")
     monkeypatch.setenv("SCHED_ORCH_RUNTIME_DIR", str(tmp_path))
 
-    from scheduler_orchestration.server import app as server_app
+    from dispatch.server import app as server_app
 
     calls = {"build_plan": 0}
 
@@ -63,7 +63,7 @@ def test_cancel_job_builds_cancel_command_via_backend_ops(tmp_path: Path, monkey
     # Keep slurm cancellation gate enabled so cancel path proceeds.
     monkeypatch.setenv("SCHED_ORCH_ENABLE_SCHEDULER_EXEC", "1")
 
-    from scheduler_orchestration.server import app as server_app
+    from dispatch.server import app as server_app
 
     server_job_id = str(uuid.uuid4())
 

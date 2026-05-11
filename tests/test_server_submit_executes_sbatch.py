@@ -41,11 +41,11 @@ def test_submit_job_executes_sbatch_and_persists_scheduler_job_id(tmp_path, monk
             stderr="",
         )
 
-    import scheduler_orchestration.server.app as app_mod
+    import dispatch.server.app as app_mod
 
     monkeypatch.setattr(app_mod.subprocess, "run", fake_run, raising=True)
 
-    from scheduler_orchestration.server.app import create_app
+    from dispatch.server.app import create_app
 
     client = TestClient(create_app())
 

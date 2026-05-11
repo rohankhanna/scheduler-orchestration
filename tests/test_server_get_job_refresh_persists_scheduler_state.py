@@ -43,11 +43,11 @@ def test_get_job_refresh_persists_scheduler_state_to_ledger(tmp_path, monkeypatc
             stderr="",
         )
 
-    import scheduler_orchestration.server.app as app_mod
+    import dispatch.server.app as app_mod
 
     monkeypatch.setattr(app_mod.subprocess, "run", fake_run, raising=True)
 
-    from scheduler_orchestration.server.app import create_app
+    from dispatch.server.app import create_app
 
     client = TestClient(create_app())
 

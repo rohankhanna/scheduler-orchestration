@@ -3,7 +3,7 @@ def test_ui_endpoint_serves_html(tmp_path, monkeypatch):
 
     monkeypatch.setenv("SCHED_ORCH_RUNTIME_DIR", str(tmp_path))
 
-    from scheduler_orchestration.server.app import create_app
+    from dispatch.server.app import create_app
 
     client = TestClient(create_app())
     r = client.get("/ui")

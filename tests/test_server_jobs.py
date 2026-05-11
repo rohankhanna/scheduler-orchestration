@@ -5,7 +5,7 @@ def _app(tmp_path, monkeypatch):
     monkeypatch.setenv("SCHED_ORCH_API_KEY", "test-key")
     monkeypatch.setenv("SCHED_ORCH_RUNTIME_DIR", str(tmp_path))
 
-    from scheduler_orchestration.server.app import create_app
+    from dispatch.server.app import create_app
 
     return create_app()
 

@@ -35,11 +35,11 @@ def test_direct_exec_persists_logs_and_exposes_logs_endpoint(tmp_path, monkeypat
     def fake_run(args, **kwargs):
         return CompletedProcess(args=args, returncode=0, stdout="hello-out\n", stderr="hello-err\n")
 
-    import scheduler_orchestration.server.app as app_mod
+    import dispatch.server.app as app_mod
 
     monkeypatch.setattr(app_mod.subprocess, "run", fake_run, raising=True)
 
-    from scheduler_orchestration.server.app import create_app
+    from dispatch.server.app import create_app
 
     client = TestClient(create_app())
 

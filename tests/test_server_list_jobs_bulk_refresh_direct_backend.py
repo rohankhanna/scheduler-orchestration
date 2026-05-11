@@ -6,7 +6,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from scheduler_orchestration.server.app import create_app
+from dispatch.server.app import create_app
 
 
 def _write_job(runtime_dir: Path, server_job_id: str) -> None:
@@ -54,7 +54,7 @@ def test_list_jobs_refresh_direct_persists_scope_state_when_enabled(monkeypatch,
             stderr="",
         )
 
-    import scheduler_orchestration.server.app as app_mod
+    import dispatch.server.app as app_mod
 
     monkeypatch.setattr(app_mod.subprocess, "run", fake_run, raising=True)
 

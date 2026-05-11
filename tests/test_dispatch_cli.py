@@ -2,7 +2,7 @@ import os
 
 
 def test_dispatch_server_start_background_writes_pid_and_logs(tmp_path, monkeypatch):
-    from scheduler_orchestration import dispatch
+    from dispatch import dispatch
 
     calls = {}
 
@@ -46,7 +46,7 @@ def test_dispatch_server_start_background_writes_pid_and_logs(tmp_path, monkeypa
 
 
 def test_dispatch_server_status_stale_pid_file(tmp_path, monkeypatch):
-    from scheduler_orchestration import dispatch
+    from dispatch import dispatch
 
     pid_path = tmp_path / "operator" / "server" / "dispatch-server.pid"
     pid_path.parent.mkdir(parents=True, exist_ok=True)
@@ -62,7 +62,7 @@ def test_dispatch_server_status_stale_pid_file(tmp_path, monkeypatch):
 
 
 def test_dispatch_server_stop_removes_pid_file(tmp_path, monkeypatch):
-    from scheduler_orchestration import dispatch
+    from dispatch import dispatch
 
     pid_path = tmp_path / "operator" / "server" / "dispatch-server.pid"
     pid_path.parent.mkdir(parents=True, exist_ok=True)

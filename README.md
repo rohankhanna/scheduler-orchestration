@@ -35,12 +35,19 @@ Run the test suite:
 
 ## Run the server (dev)
 
-The repo currently ships a small operator CLI (no packaging entrypoint yet). Use it via:
+The repo ships an installable operator CLI named `dispatch`.
 
-- python -m scheduler_orchestration.dispatch server start --runtime-dir /abs/path/to/dispatch-runtime
+Install (editable):
+
+- python -m pip install -e .
+
+Then you can run from any directory:
+
+- dispatch --help
+- dispatch server start --runtime-dir /abs/path/to/dispatch-runtime
 
 Then:
 
 - UI: http://127.0.0.1:8780/ui
-- Logs: python -m scheduler_orchestration.dispatch server logs -f --runtime-dir /abs/path/to/dispatch-runtime
-- Stop: python -m scheduler_orchestration.dispatch server stop --runtime-dir /abs/path/to/dispatch-runtime
+- Logs: dispatch server logs -f --runtime-dir /abs/path/to/dispatch-runtime
+- Stop: dispatch server stop --runtime-dir /abs/path/to/dispatch-runtime
