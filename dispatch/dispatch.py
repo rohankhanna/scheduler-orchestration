@@ -124,11 +124,13 @@ def _python_exe() -> str:
 
 
 def _uvicorn_argv(host: str, port: int, reload: bool) -> list[str]:
+    # Use the app factory so the server module doesn't need a global `app`.
     argv = [
         _python_exe(),
         "-m",
         "uvicorn",
-        "dispatch.server.app:app",
+        "dispatch.server.app:create_app",
+        "--factory",
         "--host",
         host,
         "--port",
