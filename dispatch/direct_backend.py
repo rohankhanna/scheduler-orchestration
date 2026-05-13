@@ -8,7 +8,10 @@ from dispatch.drain_state import is_drain_enabled
 
 
 def direct_systemd_scope_name(server_job_id: str) -> str:
-    return f"sched-orch-job-{server_job_id}.scope"
+    # Despite the name, we use a transient *service* unit (not a scope).
+    # Rationale: systemd-run --pipe/--pty are not compatible with --scope on
+    # modern systemd, and for long-running jobs we want asynchronous execution.
+    return f"sched-orch-job-{server_job_id}.service"
 
 
 def direct_scope_name_from_record(record: dict[str, Any]) -> str | None:
@@ -23,12 +26,19 @@ def direct_scope_name_from_record(record: dict[str, Any]) -> str | None:
 
 
 def build_systemctl_cancel_direct_command(scope_name: str) -> list[str]:
-    return ["systemctl", "kill", "--kill-who=all", scope_name]
+    # User-mode unit, started via systemd-run --user.
+    return ["systemctl", "--user", "stop", scope_name]
 
 
-def build_systemd_run_direct_command(server_job_id: str, payload_argv: list[str]) -> list[str]:
+def build_systemd_run_direct_command(
+    server_job_id: str,
+    payload_argv: list[str],
+    *,
+    stdout_path: Path,
+    stderr_path: Path,
+) -> list[str]:
     # Use argv list; no shell.
-    # This is the "cage": a transient systemd scope with cgroup properties applied.
+    # This is the "cage": a transient systemd *service* unit with cgroup properties applied.
 
     slice_name = os.environ.get("SCHED_ORCH_JOBS_SLICE", "sched-orch-jobs.slice").strip()
     allowed_cpus = os.environ.get("SCHED_ORCH_JOBS_ALLOWED_CPUS", "2-19").strip()
@@ -41,16 +51,17 @@ def build_systemd_run_direct_command(server_job_id: str, payload_argv: list[str]
 
     return [
         "systemd-run",
-        "--scope",
+        "--user",
         f"--unit={unit_name}",
-        "--wait",
-        "--pipe",
+        "--no-block",
         f"--slice={slice_name}",
         f"--property=AllowedCPUs={allowed_cpus}",
         f"--property=MemoryHigh={memory_high}",
         f"--property=MemoryMax={memory_max}",
         f"--property=CPUWeight={cpu_weight}",
         f"--property=IOWeight={io_weight}",
+        f"--property=StandardOutput=append:{stdout_path}",
+        f"--property=StandardError=append:{stderr_path}",
         "--",
         *payload_argv,
     ]

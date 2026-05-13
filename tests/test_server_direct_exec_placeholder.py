@@ -59,22 +59,29 @@ def test_direct_exec_payload_uses_systemd_run_and_persists_exit_code(tmp_path, m
     assert len(calls) == 1
     argv = calls[0]["args"]
 
-    # We should be using systemd-run to create a governed scope.
+    # We should be using systemd-run to create a governed unit.
     assert argv[0] == "systemd-run"
-    assert "--scope" in argv
-    assert f"--unit=sched-orch-job-{server_job_id}.scope" in argv
-    assert "--wait" in argv
-    assert "--pipe" in argv
+    assert "--user" in argv
+    assert "--no-block" in argv
+    assert f"--unit=sched-orch-job-{server_job_id}.service" in argv
+    assert any(
+        isinstance(x, str) and x.startswith("--property=StandardOutput=append:") and server_job_id in x
+        for x in argv
+    )
+    assert any(
+        isinstance(x, str) and x.startswith("--property=StandardError=append:") and server_job_id in x
+        for x in argv
+    )
 
     # Direct payload should be passed after the "--" marker.
     assert argv[-3:] == ["--", "echo", "hello-from-direct"]
 
-    # Durable job record should include exit code and a terminal state.
+    # Durable job record should include the unit name and a submitted state.
     job_path = tmp_path / "scheduler-job-ledger" / "jobs" / f"{server_job_id}.json"
     record = json.loads(job_path.read_text(encoding="utf-8"))
     assert record["execution_backend"] == "direct"
-    assert record["direct_scope_name"] == f"sched-orch-job-{server_job_id}.scope"
-    assert record["exit_code"] == 0
-    assert record["state"] in {"succeeded", "submitted"}
+    assert record["direct_scope_name"] == f"sched-orch-job-{server_job_id}.service"
+    assert record["exit_code"] is None
+    assert record["state"] == "submitted"
     assert isinstance(record["spec_sha256"], str)
     assert len(record["spec_sha256"]) == 64

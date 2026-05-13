@@ -72,6 +72,7 @@ def refresh_direct_record_from_systemctl_show(
         "--property=ActiveState",
         "--property=SubState",
         "--property=Result",
+        "--property=ExecMainStatus",
         "--no-pager",
     ]
     proc = subprocess.run(
@@ -87,6 +88,9 @@ def refresh_direct_record_from_systemctl_show(
     record["direct_scope_active_state"] = props.get("ActiveState") or ("not-found" if props.get("LoadState") == "not-found" else None)
     record["direct_scope_sub_state"] = props.get("SubState")
     record["direct_scope_result"] = props.get("Result")
+    exec_main_status = props.get("ExecMainStatus")
+    if isinstance(exec_main_status, str) and exec_main_status.strip().isdigit():
+        record["exit_code"] = int(exec_main_status.strip())
     record["last_refresh_at"] = utc_now_rfc3339()
 
     if direct_state_inference_enabled:

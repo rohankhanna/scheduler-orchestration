@@ -19,7 +19,7 @@ def _write_direct_job(runtime_dir: Path, server_job_id: str) -> None:
                 "state": "submitted",
                 "scheduler_job_id": None,
                 "execution_backend": "direct",
-                "direct_scope_name": f"sched-orch-job-{server_job_id}.scope",
+                "direct_scope_name": f"sched-orch-job-{server_job_id}.service",
                 "accepted": True,
                 "reason": "ok",
                 "command": ["echo", "hello"],
@@ -60,7 +60,7 @@ def test_cancel_direct_job_executes_systemctl_kill(monkeypatch, tmp_path: Path) 
 
     assert len(calls) == 1
     argv = calls[0]["args"]
-    assert argv[:4] == ["systemctl", "kill", "--kill-who=all", f"sched-orch-job-{server_job_id}.scope"]
+    assert argv == ["systemctl", "--user", "stop", f"sched-orch-job-{server_job_id}.service"]
 
     record_path = tmp_path / "scheduler-job-ledger" / "jobs" / f"{server_job_id}.json"
     record = json.loads(record_path.read_text(encoding="utf-8"))

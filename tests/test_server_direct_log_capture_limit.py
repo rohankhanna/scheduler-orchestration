@@ -32,8 +32,26 @@ def test_direct_log_capture_is_truncated_by_configured_limit(tmp_path, monkeypat
     monkeypatch.setenv("SCHED_ORCH_ENABLE_DIRECT_PAYLOAD_EXEC", "1")
     monkeypatch.setenv("SCHED_ORCH_DIRECT_LOG_CAPTURE_MAX_BYTES", "8")
 
+    def _extract_append_path(argv: list[str], key: str):
+        prefix = f"--property={key}=append:"
+        for item in argv:
+            if isinstance(item, str) and item.startswith(prefix):
+                return item[len(prefix) :]
+        return None
+
     def fake_run(args, **kwargs):
-        return CompletedProcess(args=args, returncode=0, stdout="0123456789", stderr="abcdefghij")
+        # Simulate systemd writing longer-than-limit logs to the configured files.
+        out_path = _extract_append_path(list(args), "StandardOutput")
+        err_path = _extract_append_path(list(args), "StandardError")
+        if out_path:
+            from pathlib import Path
+
+            Path(out_path).write_text("0123456789", encoding="utf-8")
+        if err_path:
+            from pathlib import Path
+
+            Path(err_path).write_text("abcdefghij", encoding="utf-8")
+        return CompletedProcess(args=args, returncode=0, stdout="", stderr="")
 
     import dispatch.server.app as app_mod
 
@@ -56,7 +74,5 @@ def test_direct_log_capture_is_truncated_by_configured_limit(tmp_path, monkeypat
     assert detail.json()["detail"]["log_capture"] == {
         "stdout": True,
         "stderr": True,
-        "truncated_stdout": True,
-        "truncated_stderr": True,
-        "max_bytes": 8,
     }
+

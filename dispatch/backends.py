@@ -13,6 +13,7 @@ from dispatch.direct_backend import (
     build_systemctl_cancel_direct_command,
     build_systemd_run_direct_command,
     direct_scope_name_from_record,
+    direct_systemd_scope_name,
 )
 from dispatch.direct_observer import refresh_direct_record_from_systemctl_show
 from dispatch.job_ledger import utc_now_rfc3339, write_job_record
@@ -377,37 +378,46 @@ def direct_backend_ops(
         if not isinstance(payload_argv, list) or not payload_argv or not all(isinstance(x, str) for x in payload_argv):
             return {"state": "failed"}
 
-        cmd = build_systemd_run_direct_command(server_job_id, payload_argv)
+        logs_dir = runtime_dir / "scheduler-job-ledger" / "logs" / server_job_id
+        logs_dir.mkdir(parents=True, exist_ok=True)
+
+        stdout_path = logs_dir / "stdout.txt"
+        stderr_path = logs_dir / "stderr.txt"
+
+        # Create the files up front so /logs can return something immediately.
+        for p in (stdout_path, stderr_path):
+            if not p.exists():
+                p.write_text("", encoding="utf-8")
+            try:
+                p.chmod(0o600)
+            except PermissionError:
+                pass
+
+        cmd = build_systemd_run_direct_command(
+            server_job_id,
+            payload_argv,
+            stdout_path=stdout_path,
+            stderr_path=stderr_path,
+        )
         try:
             proc = subprocess.run(
                 cmd,
                 check=False,
                 capture_output=True,
                 text=True,
-                timeout=60,
+                timeout=10,
             )
         except (subprocess.TimeoutExpired, FileNotFoundError):
-            return {"exit_code": None, "state": "failed"}
+            return {"state": "failed"}
 
-        max_bytes = _direct_log_capture_max_bytes()
-        raw_stdout = proc.stdout or ""
-        raw_stderr = proc.stderr or ""
-        stdout_text = raw_stdout[:max_bytes]
-        stderr_text = raw_stderr[:max_bytes]
-
-        _write_job_log_text(runtime_dir, server_job_id, "stdout", stdout_text)
-        _write_job_log_text(runtime_dir, server_job_id, "stderr", stderr_text)
+        if proc.returncode != 0:
+            # systemd-run itself failed (job never started).
+            return {"state": "failed"}
 
         return {
-            "exit_code": int(proc.returncode),
-            "log_capture": {
-                "stdout": True,
-                "stderr": True,
-                "truncated_stdout": len(raw_stdout) > len(stdout_text),
-                "truncated_stderr": len(raw_stderr) > len(stderr_text),
-                "max_bytes": max_bytes,
-            },
-            "state": "succeeded" if proc.returncode == 0 else "failed",
+            "direct_scope_name": direct_systemd_scope_name(server_job_id),
+            "log_capture": {"stdout": True, "stderr": True},
+            "state": "submitted",
         }
 
     def _execute_cancel(record: dict[str, Any], execution_enabled: bool) -> None:
@@ -428,6 +438,7 @@ def direct_backend_ops(
 
     def _get_logs(runtime_dir: Path, record: dict[str, Any], server_job_id: str) -> dict[str, str] | None:
         # Direct backend captures stdout/stderr into the runtime ledger logs directory.
+        # To avoid unbounded API responses, we apply a configurable max-bytes cap at read time.
         logs_dir = runtime_dir / "scheduler-job-ledger" / "logs" / server_job_id
         stdout_path = logs_dir / "stdout.txt"
         stderr_path = logs_dir / "stderr.txt"
@@ -438,7 +449,13 @@ def direct_backend_ops(
         if stdout is None and stderr is None:
             return None
 
-        return {"stdout": stdout or "", "stderr": stderr or ""}
+        max_bytes = _direct_log_capture_max_bytes()
+        if max_bytes <= 0:
+            return {"stdout": "", "stderr": ""}
+
+        out_stdout = (stdout or "")[:max_bytes]
+        out_stderr = (stderr or "")[:max_bytes]
+        return {"stdout": out_stdout, "stderr": out_stderr}
 
     return BackendOps(
         name="direct",
