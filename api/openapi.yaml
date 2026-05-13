@@ -685,6 +685,7 @@ components:
         - job_name
         - workflow_preset
         - device_preference
+        - payload
         - resources
         - dependencies
         - environment_overrides
@@ -705,7 +706,7 @@ components:
           type: object
           additionalProperties: false
           required: [argv]
-          description: Optional execution payload. Used by the direct execution backend when explicitly enabled.
+          description: Execution payload argv. Required for Slurm submission, and for direct execution when explicitly enabled.
           properties:
             argv:
               type: array

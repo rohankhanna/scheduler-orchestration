@@ -12,6 +12,7 @@ def _example_spec_dict():
         "job_name": "embedding-shard-0001",
         "workflow_preset": "embedding:v1",
         "device_preference": "gpu",
+        "payload": {"argv": ["/usr/bin/env", "bash", "-lc", "echo hello-from-submit-executes-sbatch"]},
         "resources": {
             "graphics_processing_units": 1,
             "central_processing_unit_cores": 4,
@@ -41,9 +42,14 @@ def test_submit_job_executes_sbatch_and_persists_scheduler_job_id(tmp_path, monk
             stderr="",
         )
 
-    import dispatch.server.app as app_mod
+    # Subprocess execution is intentionally performed by the backend layer.
+    import dispatch.backends as backends_mod
 
-    monkeypatch.setattr(app_mod.subprocess, "run", fake_run, raising=True)
+    class BackendSubprocessStub:
+        def run(self, args, **kwargs):
+            return fake_run(args, **kwargs)
+
+    monkeypatch.setattr(backends_mod, "subprocess", BackendSubprocessStub(), raising=True)
 
     from dispatch.server.app import create_app
 
@@ -64,6 +70,7 @@ def test_submit_job_executes_sbatch_and_persists_scheduler_job_id(tmp_path, monk
     assert calls[0]["kwargs"].get("text") is True
     assert calls[0]["kwargs"].get("capture_output") is True
     assert isinstance(calls[0]["kwargs"].get("timeout"), (int, float))
+    assert isinstance(calls[0]["kwargs"].get("input"), str)
 
     # Durable job record should now include scheduler_job_id and state=submitted.
     job_path = tmp_path / "scheduler-job-ledger" / "jobs" / f"{server_job_id}.json"

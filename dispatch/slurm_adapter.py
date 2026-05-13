@@ -10,6 +10,34 @@ _DEFAULT_SQUEUE_FORMAT = "%i|%j|%T|%M|%D|%C|%m|%R"
 # fields: jobid|name|state|time|nodes|cpus|min_memory|reason
 
 
+def payload_argv_from_spec(spec: dict[str, Any]) -> list[str] | None:
+    payload = spec.get("payload")
+    if not isinstance(payload, dict):
+        return None
+
+    argv = payload.get("argv")
+    if not isinstance(argv, list) or not argv:
+        return None
+
+    out: list[str] = []
+    for item in argv:
+        if not isinstance(item, str):
+            return None
+        s = item.strip()
+        if not s:
+            return None
+        if "\x00" in s:
+            return None
+        out.append(s)
+
+    if not out:
+        return None
+    if len(out) > 64:
+        return None
+
+    return out
+
+
 def build_sbatch_command(spec: dict[str, Any]) -> list[str]:
     """Construct an sbatch command list for the given SchedulerJobSpec.
 
@@ -41,9 +69,9 @@ def build_sbatch_command(spec: dict[str, Any]) -> list[str]:
     if parents:
         cmd.append(f"--dependency={policy}:{':'.join(parents)}")
 
-    # Placeholder payload: we keep this as a minimal wrap for now.
-    # The real payload wrapper will be introduced as a later task.
-    cmd.extend(["--wrap", "true"])
+    # The payload is executed via a generated batch script at submission time.
+    # This function constructs the sbatch flags only; the caller is responsible
+    # for providing the script (as a file argument or via stdin).
 
     return cmd
 
@@ -68,6 +96,71 @@ def build_squeue_list_command() -> list[str]:
         "--noheader",
         f"--format={_DEFAULT_SQUEUE_FORMAT}",
     ]
+
+
+def build_sacct_job_query_command(job_id: str) -> list[str]:
+    # Use a machine-readable format. sacct output can contain extra lines for steps;
+    # we only need the top-level job row.
+    job_id = str(job_id)
+    return [
+        "sacct",
+        f"--jobs={job_id}",
+        "--noheader",
+        "--parsable2",
+        "--format=JobIDRaw,State,ExitCode",
+    ]
+
+
+def parse_sacct_output(stdout: str) -> list[dict[str, str]]:
+    # parsable2 uses | delimiters.
+    items: list[dict[str, str]] = []
+    for raw_line in str(stdout or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        parts = [p.strip() for p in line.split("|")]
+        if len(parts) < 3:
+            continue
+
+        job_id, state, exit_code = parts[0], parts[1], parts[2]
+        if not job_id or not state:
+            continue
+
+        # Only accept the top-level job row (ignore .batch, .extern, etc.).
+        if "." in job_id:
+            continue
+
+        items.append({"job_id": job_id, "state": state, "exit_code": exit_code})
+
+    return items
+
+
+def dispatch_state_from_slurm_state(slurm_state: str) -> str | None:
+    s = str(slurm_state or "").strip().upper()
+    if not s:
+        return None
+
+    if s in {"PENDING", "CONFIGURING"}:
+        return "submitted"
+    if s in {"RUNNING", "COMPLETING"}:
+        return "running"
+    if s in {"COMPLETED"}:
+        return "succeeded"
+    if s in {"CANCELLED", "CANCELED"}:
+        return "canceled"
+
+    if s in {
+        "FAILED",
+        "TIMEOUT",
+        "OUT_OF_MEMORY",
+        "NODE_FAIL",
+        "BOOT_FAIL",
+        "DEADLINE",
+        "PREEMPTED",
+    }:
+        return "failed"
+
+    return None
 
 
 def build_scancel_command(job_id: str) -> list[str]:
@@ -102,6 +195,13 @@ def build_submission_plan(spec: dict[str, Any], drain_state_path: Path) -> dict[
         return {
             "allowed": False,
             "reason": "drain_enabled",
+            "command": None,
+        }
+
+    if not payload_argv_from_spec(spec):
+        return {
+            "allowed": False,
+            "reason": "missing_payload",
             "command": None,
         }
 

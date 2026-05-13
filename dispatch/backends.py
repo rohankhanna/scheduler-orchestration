@@ -17,9 +17,13 @@ from dispatch.direct_backend import (
 from dispatch.direct_observer import refresh_direct_record_from_systemctl_show
 from dispatch.job_ledger import utc_now_rfc3339, write_job_record
 from dispatch.slurm_adapter import (
+    build_sacct_job_query_command,
     build_scancel_command,
     build_squeue_job_query_command,
     build_submission_plan,
+    dispatch_state_from_slurm_state,
+    parse_sacct_output,
+    payload_argv_from_spec,
     parse_sbatch_submission_stdout,
 )
 from dispatch.slurm_observer import parse_squeue_output, refresh_slurm_records_from_squeue_list
@@ -68,6 +72,7 @@ def slurm_backend_ops(drain_state_path: Path) -> BackendOps:
             return record
 
         # Best-effort observation; never raise.
+        slurm_state: str | None = None
         try:
             cmd = build_squeue_job_query_command(scheduler_job_id)
             proc = subprocess.run(
@@ -79,14 +84,46 @@ def slurm_backend_ops(drain_state_path: Path) -> BackendOps:
             )
             items = parse_squeue_output(proc.stdout)
             if items:
-                record["scheduler_state"] = items[0].get("state")
-                if refresh_requested:
-                    from dispatch.job_ledger import utc_now_rfc3339, write_job_record
-
-                    record["last_refresh_at"] = utc_now_rfc3339()
-                    write_job_record(runtime_dir, record)
+                slurm_state = str(items[0].get("state") or "").strip() or None
         except Exception:
-            return record
+            slurm_state = None
+
+        if not slurm_state:
+            # Not in queue anymore; attempt to resolve final state via sacct.
+            record["scheduler_state"] = "not_in_queue"
+            try:
+                cmd = build_sacct_job_query_command(scheduler_job_id)
+                proc = subprocess.run(
+                    cmd,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                items = parse_sacct_output(proc.stdout)
+                for item in items:
+                    if str(item.get("job_id") or "").strip() != str(scheduler_job_id).strip():
+                        continue
+                    slurm_state = str(item.get("state") or "").strip() or None
+                    exit_code = str(item.get("exit_code") or "").strip()
+                    if exit_code and exit_code.split(":", 1)[0].isdigit():
+                        record["exit_code"] = int(exit_code.split(":", 1)[0])
+                    break
+            except Exception:
+                slurm_state = None
+        else:
+            record["scheduler_state"] = slurm_state
+
+        if slurm_state:
+            mapped = dispatch_state_from_slurm_state(slurm_state)
+            if mapped:
+                # Do not override explicit cancel state recorded by the API.
+                if record.get("state") != "canceled":
+                    record["state"] = mapped
+
+        if refresh_requested:
+            record["last_refresh_at"] = utc_now_rfc3339()
+            write_job_record(runtime_dir, record)
 
         return record
 
@@ -125,13 +162,68 @@ def slurm_backend_ops(drain_state_path: Path) -> BackendOps:
         if not isinstance(cmd, list) or not cmd or cmd[0] != "sbatch":
             raise ValueError("bad_plan")
 
+        spec = plan.get("spec")
+        if not isinstance(spec, dict):
+            raise ValueError("bad_plan")
+
+        payload_argv = payload_argv_from_spec(spec)
+        if not payload_argv:
+            raise ValueError("bad_plan")
+
+        env_overrides = spec.get("environment_overrides")
+        if env_overrides is None:
+            env_overrides = {}
+        if not isinstance(env_overrides, dict):
+            raise ValueError("bad_plan")
+
+        import shlex
+
+        export_lines: list[str] = []
+        for k, v in env_overrides.items():
+            if not isinstance(k, str) or not isinstance(v, str):
+                raise ValueError("bad_plan")
+            key = k.strip()
+            if not key:
+                raise ValueError("bad_plan")
+            # Only allow normal shell variable names.
+            if not key.replace("_", "A").isalnum() or not (key[0].isalpha() or key[0] == "_"):
+                raise ValueError("bad_plan")
+            export_lines.append(f"export {key}={shlex.quote(v)}")
+
+        argv_str = " ".join(shlex.quote(x) for x in payload_argv)
+        script_lines = ["#!/usr/bin/env bash", "set -euo pipefail", ""]
+        script_lines.extend(export_lines)
+        if export_lines:
+            script_lines.append("")
+        script_lines.append(f"exec {argv_str}")
+        script_lines.append("")
+        script_text = "\n".join(script_lines)
+
+        logs_dir = runtime_dir / "scheduler-job-ledger" / "logs" / server_job_id
+        logs_dir.mkdir(parents=True, exist_ok=True)
+
+        script_path = logs_dir / "slurm-job.sh"
+        script_path.write_text(script_text, encoding="utf-8")
+        try:
+            script_path.chmod(0o600)
+        except PermissionError:
+            pass
+
+        stdout_path = logs_dir / "stdout.txt"
+        stderr_path = logs_dir / "stderr.txt"
+
+        full_cmd = list(cmd)
+        full_cmd.append(f"--output={stdout_path}")
+        full_cmd.append(f"--error={stderr_path}")
+
         try:
             proc = subprocess.run(
-                cmd,
+                full_cmd,
                 check=True,
                 capture_output=True,
                 text=True,
                 timeout=10,
+                input=script_text,
             )
         except (subprocess.TimeoutExpired, subprocess.CalledProcessError, FileNotFoundError):
             return {"state": "failed"}
@@ -140,7 +232,11 @@ def slurm_backend_ops(drain_state_path: Path) -> BackendOps:
         if not scheduler_job_id:
             return {"state": "failed"}
 
-        return {"scheduler_job_id": scheduler_job_id, "state": "submitted"}
+        return {
+            "scheduler_job_id": scheduler_job_id,
+            "state": "submitted",
+            "log_capture": {"stdout": True, "stderr": True},
+        }
 
     def _execute_cancel(record: dict[str, Any], execution_enabled: bool) -> None:
         if not execution_enabled:
@@ -159,11 +255,21 @@ def slurm_backend_ops(drain_state_path: Path) -> BackendOps:
         )
 
     def _get_logs(runtime_dir: Path, record: dict[str, Any], server_job_id: str) -> dict[str, str] | None:
-        return None
+        logs_dir = runtime_dir / "scheduler-job-ledger" / "logs" / server_job_id
+        stdout_path = logs_dir / "stdout.txt"
+        stderr_path = logs_dir / "stderr.txt"
+
+        stdout = stdout_path.read_text(encoding="utf-8") if stdout_path.exists() else None
+        stderr = stderr_path.read_text(encoding="utf-8") if stderr_path.exists() else None
+
+        if stdout is None and stderr is None:
+            return None
+
+        return {"stdout": stdout or "", "stderr": stderr or ""}
 
     return BackendOps(
         name="slurm",
-        build_plan=lambda spec, _: _plan(spec, drain_state_path),
+        build_plan=lambda spec, _: {**_plan(spec, drain_state_path), "spec": spec},
         build_cancel_command=_cancel,
         execute_submission=_execute_submission,
         execute_cancel=_execute_cancel,

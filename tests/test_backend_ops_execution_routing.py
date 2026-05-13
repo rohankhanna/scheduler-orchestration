@@ -11,6 +11,7 @@ def _example_slurm_spec_dict() -> dict:
         "job_name": "embedding-shard-0001",
         "workflow_preset": "embedding:v1",
         "device_preference": "gpu",
+        "payload": {"argv": ["/usr/bin/env", "bash", "-lc", "echo hello-from-slurm"]},
         "resources": {
             "graphics_processing_units": 1,
             "central_processing_unit_cores": 4,
@@ -91,7 +92,7 @@ def test_cancel_executes_scancel_via_backend_layer_subprocess(tmp_path, monkeypa
                 "execution_backend": "slurm",
                 "accepted": True,
                 "reason": "ok",
-                "command": ["sbatch", "--wrap", "true"],
+                "command": ["sbatch", "--job-name=embedding-shard-0001"],
                 "spec": _example_slurm_spec_dict(),
             }
         )

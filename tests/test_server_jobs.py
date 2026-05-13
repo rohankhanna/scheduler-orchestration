@@ -15,6 +15,7 @@ def _example_spec_dict():
         "job_name": "embedding-shard-0001",
         "workflow_preset": "embedding:v1",
         "device_preference": "gpu",
+        "payload": {"argv": ["/usr/bin/env", "bash", "-lc", "echo hello-from-server-jobs"]},
         "resources": {
             "graphics_processing_units": 1,
             "central_processing_unit_cores": 4,

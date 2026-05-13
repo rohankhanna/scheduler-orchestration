@@ -10,7 +10,7 @@ def _load_example_spec_dict() -> dict:
     return json.loads(example_path.read_text(encoding="utf-8"))
 
 
-def test_build_sbatch_command_includes_job_name_and_resources_and_wrap():
+def test_build_sbatch_command_includes_job_name_and_resources_and_no_wrap():
     # This test is deliberately about command construction only (dry-run behavior).
     spec = _load_example_spec_dict()
 
@@ -25,7 +25,7 @@ def test_build_sbatch_command_includes_job_name_and_resources_and_wrap():
     assert "--job-name=" in joined
     assert "--cpus-per-task=" in joined
     assert "--mem=" in joined
-    assert "--wrap" in cmd
+    assert "--wrap" not in cmd
 
 
 def test_build_dependency_flag_afterok():
