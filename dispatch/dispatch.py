@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -231,9 +232,113 @@ def _is_dispatch_server_at(base_url: str) -> bool:
         return False
 
 
+def _port_listening_pid(host: str, port: int) -> int | None:
+    """Best-effort: return the PID listening on host:port, if we can determine it.
+
+    Used for:
+    - server-start preflight (avoid runtime-dir mismatches on the same port)
+    - status/doctor diagnostics
+
+    If we cannot determine the PID (permissions, missing tools, etc.), return None.
+    """
+
+    host = str(host)
+    port = int(port)
+
+    # Fast occupancy test: if we can bind, the port isn't in use.
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind((host, port))
+            return None
+        finally:
+            try:
+                s.close()
+            except Exception:
+                pass
+    except OSError:
+        # likely in use
+        pass
+
+    # Best-effort PID discovery via `ss -ltnp`.
+    try:
+        proc = subprocess.run(
+            ["ss", "-ltnp"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except Exception:
+        return None
+
+    import re
+
+    target = f"{host}:{port}"
+    for line in str(proc.stdout or "").splitlines():
+        if target not in line:
+            continue
+        m = re.search(r"pid=(\d+)", line)
+        if not m:
+            continue
+        try:
+            return int(m.group(1))
+        except ValueError:
+            continue
+
+    return None
+
+
+def _runtime_dir_from_pid_environ(pid: int) -> Path | None:
+    """Best-effort read of SCHED_ORCH_RUNTIME_DIR from /proc/<pid>/environ."""
+
+    try:
+        data = Path(f"/proc/{int(pid)}/environ").read_bytes()
+    except (FileNotFoundError, PermissionError, OSError):
+        return None
+
+    for raw in data.split(b"\x00"):
+        if not raw:
+            continue
+        if raw.startswith(b"SCHED_ORCH_RUNTIME_DIR="):
+            try:
+                value = raw.split(b"=", 1)[1].decode("utf-8", errors="replace").strip()
+            except Exception:
+                return None
+            if not value:
+                return None
+            return Path(value)
+
+    return None
+
+
 def _cmd_server_start(args: argparse.Namespace) -> int:
     runtime_dir = _runtime_dir(args.runtime_dir)
     paths = _server_paths(runtime_dir, args.pid_file, args.log_file)
+
+    # Preflight: refuse to start when a Dispatch server on this port already
+    # belongs to a different runtime dir. This prevents confusing auth failures
+    # caused by minting keys under runtime Y while requests hit runtime X.
+    listening_pid = _port_listening_pid(args.host, args.port)
+    if listening_pid is not None:
+        base_url = f"http://{args.host}:{int(args.port)}"
+        if _is_dispatch_server_at(base_url):
+            active_runtime = _runtime_dir_from_pid_environ(listening_pid)
+            if active_runtime is not None and active_runtime.resolve() != runtime_dir.resolve():
+                sys.stderr.write("ERROR: dispatch server port already in use by another runtime.\n")
+                sys.stderr.write(f"listen:            {base_url}\n")
+                sys.stderr.write(f"existing_pid:      {listening_pid}\n")
+                sys.stderr.write(f"existing_runtime:  {active_runtime}\n")
+                sys.stderr.write(f"requested_runtime: {runtime_dir}\n")
+                sys.stderr.write("\n")
+                sys.stderr.write("This commonly appears as API key auth failures (unauthorized) when keys were minted under a different runtime dir.\n")
+                sys.stderr.write("\n")
+                sys.stderr.write("Next steps (pick one):\n")
+                sys.stderr.write(f"- stop old server: dispatch server stop --runtime-dir {active_runtime}\n")
+                sys.stderr.write(f"- or use existing runtime: dispatch server start --runtime-dir {active_runtime}\n")
+                sys.stderr.write(f"- or choose another port: dispatch server start --runtime-dir {runtime_dir} --port <PORT>\n")
+                return 2
 
     existing_pid = _read_pid(paths.pid_path)
     if existing_pid is not None and _pid_is_running(existing_pid):
@@ -359,6 +464,26 @@ def _cmd_server_status(args: argparse.Namespace) -> int:
         sys.stdout.write("dispatch server: not running (stale pid file)\n")
         sys.stdout.write(f"pid_file: {paths.pid_path}\n")
         sys.stdout.write(f"pid: {pid}\n")
+
+        # If another Dispatch is running on the default port but under a different
+        # runtime dir, it's very likely the root cause of confusing "unauthorized"
+        # failures (keys minted under one runtime, requests going to another).
+        base_url = f"http://{DEFAULT_HOST}:{DEFAULT_PORT}"
+        other_pid = _port_listening_pid(DEFAULT_HOST, DEFAULT_PORT)
+        if other_pid is not None and _is_dispatch_server_at(base_url):
+            other_runtime = _runtime_dir_from_pid_environ(other_pid)
+            if other_runtime is not None and other_runtime.resolve() != runtime_dir.resolve():
+                sys.stdout.write("\n")
+                sys.stdout.write("WARNING: wrong runtime on same port (likely causes unauthorized API key errors).\n")
+                sys.stdout.write(f"active_pid: {other_pid}\n")
+                sys.stdout.write(f"active_runtime_dir: {other_runtime}\n")
+                sys.stdout.write(f"status_runtime_dir: {runtime_dir}\n")
+                sys.stdout.write(f"detected_url: {base_url}/ui\n")
+                sys.stdout.write("\n")
+                sys.stdout.write("Remediation:\n")
+                sys.stdout.write(f"- stop the active server: dispatch server stop --runtime-dir {other_runtime}\n")
+                sys.stdout.write(f"- or run status against that runtime: dispatch server status --runtime-dir {other_runtime}\n")
+
         return 1
 
     sys.stdout.write("dispatch server: running\n")
@@ -435,8 +560,79 @@ def _http_client(base_url: str):
     return httpx.Client(base_url=base_url, timeout=5.0)
 
 
+def _cmd_doctor(args: argparse.Namespace) -> int:
+    base_url = str(args.base_url or "").strip().rstrip("/")
+    if not base_url:
+        sys.stderr.write("doctor requires --base-url\n")
+        return 2
+
+    expected_runtime_dir = _runtime_dir(getattr(args, "runtime_dir", "") or None)
+
+    # Parse host/port from the base URL.
+    try:
+        from urllib.parse import urlparse
+
+        u = urlparse(base_url)
+        host = u.hostname or DEFAULT_HOST
+        port = int(u.port or DEFAULT_PORT)
+    except Exception:
+        host = DEFAULT_HOST
+        port = DEFAULT_PORT
+
+    active_pid = _port_listening_pid(host, port)
+    dispatch_detected = _is_dispatch_server_at(base_url)
+
+    active_runtime_dir: Path | None = None
+    if active_pid is not None:
+        active_runtime_dir = _runtime_dir_from_pid_environ(active_pid)
+
+    sys.stdout.write("dispatch doctor\n")
+    sys.stdout.write(f"base_url: {base_url}\n")
+    sys.stdout.write(f"expected_runtime_dir: {expected_runtime_dir}\n")
+    sys.stdout.write(f"expected_auth_store_path: {expected_runtime_dir / 'auth' / 'api_keys.json'}\n")
+    sys.stdout.write("\n")
+
+    if active_pid is None:
+        sys.stdout.write("active_pid: <unknown>\n")
+    else:
+        sys.stdout.write(f"active_pid: {active_pid}\n")
+
+    if active_runtime_dir is None:
+        sys.stdout.write("active_runtime_dir: <unknown>\n")
+    else:
+        sys.stdout.write(f"active_runtime_dir: {active_runtime_dir}\n")
+        sys.stdout.write(f"active_auth_store_path: {active_runtime_dir / 'auth' / 'api_keys.json'}\n")
+
+    sys.stdout.write("\n")
+
+    if not dispatch_detected:
+        sys.stdout.write("FAIL: no Dispatch server detected at base_url.\n")
+        sys.stdout.write("Remediation:\n")
+        sys.stdout.write(f"- start server: dispatch server start --runtime-dir {expected_runtime_dir} --host {host} --port {port}\n")
+        return 1
+
+    if active_runtime_dir is None:
+        sys.stdout.write("FAIL: Dispatch detected but runtime dir could not be determined from the owning process.\n")
+        sys.stdout.write("Remediation:\n")
+        sys.stdout.write(f"- run status: dispatch server status --runtime-dir {expected_runtime_dir}\n")
+        return 1
+
+    if active_runtime_dir.resolve() != expected_runtime_dir.resolve():
+        sys.stdout.write("FAIL: runtime-dir mismatch detected (likely why auth returns unauthorized).\n")
+        sys.stdout.write("Remediation (pick one):\n")
+        sys.stdout.write(f"- stop active server: dispatch server stop --runtime-dir {active_runtime_dir}\n")
+        sys.stdout.write(f"- use active runtime: dispatch server status --runtime-dir {active_runtime_dir}\n")
+        sys.stdout.write(f"- or start on another port: dispatch server start --runtime-dir {expected_runtime_dir} --port <PORT>\n")
+        return 1
+
+    sys.stdout.write("PASS: active server runtime dir matches expected runtime dir.\n")
+    return 0
+
+
 def _cmd_bootstrap(args: argparse.Namespace) -> int:
     base_url = args.base_url.rstrip("/")
+
+    runtime_dir_hint = _runtime_dir(getattr(args, "runtime_dir", "") or None)
 
     # Avoid echoing secrets back to the user; only print the API key as the last line.
     username = args.username
@@ -509,6 +705,10 @@ def _cmd_bootstrap(args: argparse.Namespace) -> int:
             sys.stdout.write("bootstrap ok\n")
             sys.stdout.write(f"base_url: {base_url}\n")
             sys.stdout.write(f"ui: {base_url}/ui\n")
+            sys.stdout.write("\n")
+            sys.stdout.write("Env hint (non-secret; keep runtime dir consistent between server and keyring):\n")
+            sys.stdout.write(f"DISPATCH_BASE_URL={base_url}\n")
+            sys.stdout.write(f"DISPATCH_RUNTIME_DIR={runtime_dir_hint}\n")
             sys.stdout.write(f"project_id: {project_id}\n")
             sys.stdout.write("api_key:\n")
 
@@ -553,6 +753,11 @@ def _build_parser() -> argparse.ArgumentParser:
     status.add_argument("--log-file", default="")
     status.set_defaults(func=_cmd_server_status)
 
+    doctor_server = server_sub.add_parser("doctor", help="Diagnose server/runtime-dir/keyring mismatches")
+    doctor_server.add_argument("--runtime-dir", default="")
+    doctor_server.add_argument("--base-url", default=f"http://{DEFAULT_HOST}:{DEFAULT_PORT}")
+    doctor_server.set_defaults(func=_cmd_doctor)
+
     logs = server_sub.add_parser("logs", help="Print server logs")
     logs.add_argument("--runtime-dir", default="")
     logs.add_argument("--pid-file", default="")
@@ -561,8 +766,14 @@ def _build_parser() -> argparse.ArgumentParser:
     logs.add_argument("-f", "--follow", action="store_true")
     logs.set_defaults(func=_cmd_server_logs)
 
+    doctor = sub.add_parser("doctor", help="Diagnose server/runtime-dir/keyring mismatches")
+    doctor.add_argument("--runtime-dir", default="")
+    doctor.add_argument("--base-url", default=f"http://{DEFAULT_HOST}:{DEFAULT_PORT}")
+    doctor.set_defaults(func=_cmd_doctor)
+
     bootstrap = sub.add_parser("bootstrap", help="Bootstrap: create user, login, create project, mint api key")
     bootstrap.add_argument("--base-url", default=f"http://{DEFAULT_HOST}:{DEFAULT_PORT}")
+    bootstrap.add_argument("--runtime-dir", default="", help="Runtime dir hint to print with env guidance")
     bootstrap.add_argument("--username", required=True)
     bootstrap.add_argument("--password", required=True)
     bootstrap.add_argument("--project-name", required=True)

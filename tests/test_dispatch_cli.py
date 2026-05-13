@@ -186,3 +186,123 @@ def test_dispatch_server_status_warns_if_port_serving_but_no_pid(tmp_path, monke
     assert rc == 1
     out = capsys.readouterr().out
     assert "WARNING: dispatch server appears to be running outside this runtime dir" in out
+
+
+def test_dispatch_server_start_aborts_on_port_collision_runtime_mismatch_no_pid_written(tmp_path, monkeypatch, capsys):
+    from dispatch import dispatch
+
+    other_pid = 424242
+    requested_runtime = tmp_path / "requested"
+    active_runtime = tmp_path / "active"
+
+    # Simulate port already occupied by a Dispatch server owned by other_pid.
+    monkeypatch.setattr(dispatch, "_port_listening_pid", lambda host, port: other_pid)
+    monkeypatch.setattr(dispatch, "_is_dispatch_server_at", lambda base_url: True)
+    monkeypatch.setattr(dispatch, "_runtime_dir_from_pid_environ", lambda pid: active_runtime)
+
+    calls = {"popen": 0}
+
+    def fake_popen(*args, **kwargs):
+        calls["popen"] += 1
+        raise AssertionError("must not attempt to start when port is already owned by another runtime")
+
+    monkeypatch.setattr(dispatch.subprocess, "Popen", fake_popen)
+
+    rc = dispatch.main(
+        [
+            "server",
+            "start",
+            "--runtime-dir",
+            str(requested_runtime),
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "9999",
+        ]
+    )
+    assert rc == 2
+
+    err = capsys.readouterr().err
+    assert "port already in use" in err
+    assert str(other_pid) in err
+    assert str(active_runtime) in err
+    assert str(requested_runtime) in err
+
+    # No pid/log should be written for the requested runtime dir.
+    pid_path = requested_runtime / "operator" / "server" / "dispatch-server.pid"
+    log_path = requested_runtime / "operator" / "server" / "dispatch-server.log"
+    assert not pid_path.exists()
+    assert not log_path.exists()
+    assert calls["popen"] == 0
+
+
+def test_dispatch_server_status_reports_wrong_runtime_on_same_port_when_pid_stale(tmp_path, monkeypatch, capsys):
+    from dispatch import dispatch
+
+    # Stale pid file under this runtime.
+    pid_path = tmp_path / "operator" / "server" / "dispatch-server.pid"
+    pid_path.parent.mkdir(parents=True, exist_ok=True)
+    pid_path.write_text("999999\n", encoding="utf-8")
+
+    # pid is stale
+    monkeypatch.setattr(dispatch, "_pid_is_running", lambda pid: False)
+
+    other_pid = 12345
+    other_runtime = tmp_path / "other"
+
+    monkeypatch.setattr(dispatch, "_port_listening_pid", lambda host, port: other_pid)
+    monkeypatch.setattr(dispatch, "_is_dispatch_server_at", lambda base_url: True)
+    monkeypatch.setattr(dispatch, "_runtime_dir_from_pid_environ", lambda pid: other_runtime)
+
+    rc = dispatch.main(["server", "status", "--runtime-dir", str(tmp_path)])
+    assert rc == 1
+
+    out = capsys.readouterr().out
+    assert "wrong runtime on same port" in out
+    assert str(other_pid) in out
+    assert str(other_runtime) in out
+    assert str(tmp_path) in out
+
+
+def test_dispatch_doctor_reports_mismatch_and_no_secrets(tmp_path, monkeypatch, capsys):
+    from dispatch import dispatch
+
+    expected_runtime = tmp_path / "expected"
+    expected_runtime.mkdir(parents=True, exist_ok=True)
+
+    active_pid = 2222
+    active_runtime = tmp_path / "active"
+
+    monkeypatch.setattr(dispatch, "_port_listening_pid", lambda host, port: active_pid)
+    monkeypatch.setattr(dispatch, "_is_dispatch_server_at", lambda base_url: True)
+    monkeypatch.setattr(dispatch, "_runtime_dir_from_pid_environ", lambda pid: active_runtime)
+
+    rc = dispatch.main(["doctor", "--runtime-dir", str(expected_runtime), "--base-url", "http://127.0.0.1:9999"])
+    assert rc == 1
+
+    out = capsys.readouterr().out
+    assert "FAIL" in out
+    assert str(active_pid) in out
+    assert str(active_runtime) in out
+    assert str(expected_runtime) in out
+    assert "unauthorized" in out.lower()
+
+
+def test_dispatch_doctor_reports_pass_when_runtime_matches(tmp_path, monkeypatch, capsys):
+    from dispatch import dispatch
+
+    runtime = tmp_path / "runtime"
+    runtime.mkdir(parents=True, exist_ok=True)
+
+    active_pid = 3333
+
+    monkeypatch.setattr(dispatch, "_port_listening_pid", lambda host, port: active_pid)
+    monkeypatch.setattr(dispatch, "_is_dispatch_server_at", lambda base_url: True)
+    monkeypatch.setattr(dispatch, "_runtime_dir_from_pid_environ", lambda pid: runtime)
+
+    rc = dispatch.main(["doctor", "--runtime-dir", str(runtime), "--base-url", "http://127.0.0.1:9999"])
+    assert rc == 0
+
+    out = capsys.readouterr().out
+    assert "PASS" in out
+    assert str(active_pid) in out
