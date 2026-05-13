@@ -33,6 +33,11 @@ Run the test suite:
 
 - pytest -q
 
+## Operations
+
+- docs/operations/restart-recovery-and-logs.md
+- docs/operations/dispatch-local-slurm.md
+
 ## Run the server (dev)
 
 The repo ships an installable operator CLI named `dispatch`.
