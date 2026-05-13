@@ -481,9 +481,10 @@ def _cmd_bootstrap(args: argparse.Namespace) -> int:
             )
             return 1
 
-        project_id = str(r.json().get("id") or "").strip()
+        project_body = r.json() if hasattr(r, "json") else {}
+        project_id = str((project_body or {}).get("project_id") or (project_body or {}).get("id") or "").strip()
         if not project_id:
-            sys.stderr.write("create project failed: missing project id\n")
+            sys.stderr.write("create project failed: missing project_id in response\n")
             return 1
 
         # 4) mint api key
