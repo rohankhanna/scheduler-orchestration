@@ -31,6 +31,8 @@ def test_direct_exec_persists_logs_and_exposes_logs_endpoint(tmp_path, monkeypat
     monkeypatch.setenv("SCHED_ORCH_EXECUTION_BACKEND", "direct")
     monkeypatch.setenv("SCHED_ORCH_ENABLE_DIRECT_EXEC", "1")
     monkeypatch.setenv("SCHED_ORCH_ENABLE_DIRECT_PAYLOAD_EXEC", "1")
+    # Enable wrapper mode to ensure the payload itself redirects output to the ledger logs.
+    monkeypatch.setenv("SCHED_ORCH_DIRECT_LOG_WRAPPER", "1")
 
     def _extract_append_path(argv: list[str], key: str):
         prefix = f"--property={key}=append:"
@@ -41,9 +43,12 @@ def test_direct_exec_persists_logs_and_exposes_logs_endpoint(tmp_path, monkeypat
 
     def fake_run(args, **kwargs):
         # systemd-run is asynchronous; in production systemd writes to these paths.
-        # In tests we simulate the unit having already written logs.
+        # In tests we simulate wrapper-mode redirection having already written logs.
         out_path = _extract_append_path(list(args), "StandardOutput")
         err_path = _extract_append_path(list(args), "StandardError")
+        assert args[-3] == "bash"
+        assert args[-2] == "-lc"
+        assert ">>" in args[-1]
         if out_path:
             from pathlib import Path
 
@@ -52,7 +57,7 @@ def test_direct_exec_persists_logs_and_exposes_logs_endpoint(tmp_path, monkeypat
             from pathlib import Path
 
             Path(err_path).write_text("hello-err\n", encoding="utf-8")
-        return CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+        return CompletedProcess(args=args, returncode=0, stdout="Running as unit test.service.\n", stderr="")
 
     import dispatch.server.app as app_mod
 
@@ -80,6 +85,9 @@ def test_direct_exec_persists_logs_and_exposes_logs_endpoint(tmp_path, monkeypat
     )
     assert detail["log_capture"]["stdout"] is True
     assert detail["log_capture"]["stderr"] is True
+    assert detail["direct_submit_returncode"] == 0
+    assert detail["direct_submit_stdout"] == "Running as unit test.service.\n"
+    assert detail["direct_submit_stderr"] == ""
 
     logs = client.get(
         f"/v1/jobs/{server_job_id}/logs",

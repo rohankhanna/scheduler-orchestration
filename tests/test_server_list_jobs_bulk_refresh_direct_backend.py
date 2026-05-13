@@ -46,7 +46,7 @@ def test_list_jobs_refresh_direct_persists_scope_state_when_enabled(monkeypatch,
     _write_job(tmp_path, server_job_id)
 
     def fake_run(cmd, check, capture_output, text, timeout):
-        assert cmd[:3] == ["systemctl", "show", f"sched-orch-job-{server_job_id}.scope"]
+        assert cmd[:4] == ["systemctl", "--user", "show", f"sched-orch-job-{server_job_id}.scope"]
         return subprocess.CompletedProcess(
             args=cmd,
             returncode=0,

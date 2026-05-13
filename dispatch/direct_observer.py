@@ -22,33 +22,59 @@ def parse_systemctl_show_properties(stdout: str) -> dict[str, str]:
 
 
 def infer_direct_job_state_from_scope(record: dict[str, Any]) -> str | None:
-    # Only infer terminal state when systemd says the unit is not active anymore.
+    """Infer a Dispatch job state from cached `systemctl show` properties.
+
+    Key invariants:
+    - If ExecMainStatus is present (and we persisted it as `exit_code`), prefer it for
+      terminal state even if LoadState becomes `not-found` for short-lived units.
+    - Do not regress a terminal `succeeded` job to `failed`/`unknown` on later refreshes
+      when observation becomes incomplete (common for transient units).
+    """
+
     load = str(record.get("direct_scope_load_state") or "").strip().lower()
     active = str(record.get("direct_scope_active_state") or "").strip().lower()
     sub = str(record.get("direct_scope_sub_state") or "").strip().lower()
     result = str(record.get("direct_scope_result") or "").strip().lower()
 
+    prior_state = str(record.get("state") or "").strip().lower()
+
+    # If we have an exit code, trust it for terminal inference as long as the unit is
+    # not currently active.
+    exit_code = record.get("exit_code")
+    if not (active in {"active", "activating", "reloading"}):
+        if isinstance(exit_code, int):
+            inferred = "succeeded" if exit_code == 0 else "failed"
+            # Never regress a known success.
+            if prior_state == "succeeded" and inferred != "succeeded":
+                return "succeeded"
+            return inferred
+
     if load in {"not-found", "masked"}:
+        # Unit metadata is gone; keep prior terminal success if we had it.
+        if prior_state == "succeeded":
+            return "succeeded"
         return "unknown"
 
     if active in {"active", "activating", "reloading"}:
         return "running"
 
     if active in {"inactive", "failed", "deactivating"}:
-        # If we have an exit code, trust it.
-        exit_code = record.get("exit_code")
-        if isinstance(exit_code, int):
-            return "succeeded" if exit_code == 0 else "failed"
-
         # Fall back to systemd 'Result' when present.
         if result in {"success", "exit-code"}:
             # 'exit-code' may still be failure, but we don't know the code.
-            return "failed" if result == "exit-code" else "succeeded"
+            inferred = "failed" if result == "exit-code" else "succeeded"
+            if prior_state == "succeeded" and inferred != "succeeded":
+                return "succeeded"
+            return inferred
         if result in {"timeout", "signal", "core-dump", "watchdog", "resources"}:
+            if prior_state == "succeeded":
+                return "succeeded"
             return "failed"
 
-        # If the scope is dead/inactive but we have no exit code, record unknown.
+        # If the unit is dead/inactive but we have no exit code, record unknown.
         if sub in {"dead", "failed"}:
+            if prior_state == "succeeded":
+                return "succeeded"
             return "unknown"
 
     return None
@@ -64,8 +90,10 @@ def refresh_direct_record_from_systemctl_show(
     if not scope_name:
         return
 
+    # Direct backend uses systemd-run --user; observation must use systemctl --user.
     cmd = [
         "systemctl",
+        "--user",
         "show",
         scope_name,
         "--property=LoadState",

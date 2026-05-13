@@ -83,5 +83,9 @@ def test_direct_exec_payload_uses_systemd_run_and_persists_exit_code(tmp_path, m
     assert record["direct_scope_name"] == f"sched-orch-job-{server_job_id}.service"
     assert record["exit_code"] is None
     assert record["state"] == "submitted"
+    assert record["direct_submit_returncode"] == 0
+    assert record["direct_submit_stdout"] == ""
+    assert record["direct_submit_stderr"] == ""
+    assert record["direct_submit_argv"][-1] == "<payload-argv-redacted>"
     assert isinstance(record["spec_sha256"], str)
     assert len(record["spec_sha256"]) == 64

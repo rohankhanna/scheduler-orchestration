@@ -719,6 +719,12 @@ async function mintKey() {
         log_capture: dict[str, Any] = {"stdout": False, "stderr": False}
         state = "accepted" if plan["allowed"] else "blocked"
 
+        # Direct-backend submission diagnostics (best-effort; redacted/truncated).
+        direct_submit_returncode: int | None = None
+        direct_submit_stdout: str | None = None
+        direct_submit_stderr: str | None = None
+        direct_submit_argv: list[str] | None = None
+
         execution_enabled = _direct_execution_enabled() if backend == "direct" else _scheduler_execution_enabled()
 
         execute_submission = getattr(backend_ops, "execute_submission", None)
@@ -739,6 +745,15 @@ async function mintKey() {
                 if isinstance(updates.get("state"), str) and updates.get("state"):
                     state = updates["state"]
 
+                if isinstance(updates.get("direct_submit_returncode"), int):
+                    direct_submit_returncode = updates["direct_submit_returncode"]
+                if isinstance(updates.get("direct_submit_stdout"), str):
+                    direct_submit_stdout = updates["direct_submit_stdout"]
+                if isinstance(updates.get("direct_submit_stderr"), str):
+                    direct_submit_stderr = updates["direct_submit_stderr"]
+                if isinstance(updates.get("direct_submit_argv"), list) and all(isinstance(x, str) for x in updates.get("direct_submit_argv", [])):
+                    direct_submit_argv = updates["direct_submit_argv"]
+
 
         record = {
             "server_job_id": server_job_id,
@@ -750,6 +765,10 @@ async function mintKey() {
             "execution_backend": backend,
             "direct_scope_name": direct_scope_name,
             "log_capture": log_capture,
+            "direct_submit_returncode": direct_submit_returncode,
+            "direct_submit_stdout": direct_submit_stdout,
+            "direct_submit_stderr": direct_submit_stderr,
+            "direct_submit_argv": direct_submit_argv,
             "accepted": bool(plan["allowed"]),
             "reason": plan["reason"],
             "command": plan["command"],

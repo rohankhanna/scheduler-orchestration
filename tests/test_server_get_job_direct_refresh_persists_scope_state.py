@@ -42,7 +42,7 @@ def test_get_job_refresh_direct_persists_scope_state(monkeypatch, tmp_path: Path
     _write_direct_job(tmp_path, server_job_id)
 
     def fake_run(args, **kwargs):
-        assert args[:3] == ["systemctl", "show", f"sched-orch-job-{server_job_id}.scope"]
+        assert args[:4] == ["systemctl", "--user", "show", f"sched-orch-job-{server_job_id}.scope"]
         return CompletedProcess(
             args=args,
             returncode=0,

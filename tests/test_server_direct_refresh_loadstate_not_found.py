@@ -42,7 +42,7 @@ def test_direct_refresh_persists_not_found_sentinel(monkeypatch, tmp_path: Path)
     _write_direct_job(tmp_path, server_job_id)
 
     def fake_run(args, **kwargs):
-        assert args[:3] == ["systemctl", "show", f"sched-orch-job-{server_job_id}.scope"]
+        assert args[:4] == ["systemctl", "--user", "show", f"sched-orch-job-{server_job_id}.scope"]
         return CompletedProcess(
             args=args,
             returncode=3,

@@ -368,6 +368,40 @@ def direct_backend_ops(
         except PermissionError:
             pass
 
+    def _direct_submit_diagnostic_max_bytes() -> int:
+        raw = os.environ.get("SCHED_ORCH_DIRECT_SUBMIT_DIAG_MAX_BYTES", "4096").strip()
+        try:
+            n = int(raw)
+        except ValueError:
+            return 4096
+        if n < 0:
+            return 0
+        if n > 1024 * 1024:
+            return 1024 * 1024
+        return n
+
+    def _direct_submit_wrapper_enabled() -> bool:
+        return os.environ.get("SCHED_ORCH_DIRECT_LOG_WRAPPER", "").strip() in {"1", "true", "yes"}
+
+    def _redact_argv_for_record(argv: list[str]) -> list[str]:
+        """Best-effort redaction for argv persisted to the job record.
+
+        We avoid persisting potential secrets by:
+        - leaving systemd-run/system properties intact (these shouldn't contain secrets)
+        - replacing the payload argv after the "--" marker with a minimal placeholder.
+
+        This still provides strong diagnostics (unit name, properties, wrapper mode) while
+        avoiding leaking payload arguments that could embed secrets.
+        """
+
+        out: list[str] = []
+        for item in argv:
+            out.append(item)
+        if "--" in out:
+            idx = out.index("--")
+            return out[: idx + 1] + ["<payload-argv-redacted>"]
+        return out
+
     def _execute_submission(runtime_dir: Path, server_job_id: str, plan: dict[str, Any], execution_enabled: bool) -> dict[str, Any]:
         if not execution_enabled:
             return {}
@@ -393,9 +427,20 @@ def direct_backend_ops(
             except PermissionError:
                 pass
 
+        # Fallback: explicitly redirect stdout/stderr within the payload command itself.
+        # This is useful for very short-lived units where systemd output redirection can be
+        # flaky (or where we race unit teardown).
+        effective_payload_argv = list(payload_argv)
+        if _direct_submit_wrapper_enabled():
+            import shlex
+
+            payload_str = " ".join(shlex.quote(x) for x in payload_argv)
+            wrapped = f"exec {payload_str} >>{shlex.quote(str(stdout_path))} 2>>{shlex.quote(str(stderr_path))}"
+            effective_payload_argv = ["bash", "-lc", wrapped]
+
         cmd = build_systemd_run_direct_command(
             server_job_id,
-            payload_argv,
+            effective_payload_argv,
             stdout_path=stdout_path,
             stderr_path=stderr_path,
         )
@@ -410,15 +455,29 @@ def direct_backend_ops(
         except (subprocess.TimeoutExpired, FileNotFoundError):
             return {"state": "failed"}
 
-        if proc.returncode != 0:
-            # systemd-run itself failed (job never started).
-            return {"state": "failed"}
+        max_bytes = _direct_submit_diagnostic_max_bytes()
+        if max_bytes <= 0:
+            submit_stdout = ""
+            submit_stderr = ""
+        else:
+            submit_stdout = (proc.stdout or "")[:max_bytes]
+            submit_stderr = (proc.stderr or "")[:max_bytes]
 
-        return {
+        updates: dict[str, Any] = {
             "direct_scope_name": direct_systemd_scope_name(server_job_id),
             "log_capture": {"stdout": True, "stderr": True},
-            "state": "submitted",
+            "state": "submitted" if proc.returncode == 0 else "failed",
+            "direct_submit_returncode": int(proc.returncode),
+            "direct_submit_stdout": submit_stdout,
+            "direct_submit_stderr": submit_stderr,
+            "direct_submit_argv": _redact_argv_for_record(list(cmd)),
         }
+
+        if proc.returncode != 0:
+            # systemd-run itself failed (job never started).
+            return updates
+
+        return updates
 
     def _execute_cancel(record: dict[str, Any], execution_enabled: bool) -> None:
         if not execution_enabled:
