@@ -20,10 +20,13 @@ from dispatch.job_ledger import utc_now_rfc3339, write_job_record
 from dispatch.slurm_adapter import (
     build_sacct_job_query_command,
     build_scancel_command,
+    build_scontrol_show_job_command,
     build_squeue_job_query_command,
     build_submission_plan,
     dispatch_state_from_slurm_state,
+    exit_code_int_from_slurm_exit_code,
     parse_sacct_output,
+    parse_scontrol_show_job_output,
     payload_argv_from_spec,
     parse_sbatch_submission_stdout,
 )
@@ -106,16 +109,39 @@ def slurm_backend_ops(drain_state_path: Path) -> BackendOps:
                     if str(item.get("job_id") or "").strip() != str(scheduler_job_id).strip():
                         continue
                     slurm_state = str(item.get("state") or "").strip() or None
-                    exit_code = str(item.get("exit_code") or "").strip()
-                    if exit_code and exit_code.split(":", 1)[0].isdigit():
-                        record["exit_code"] = int(exit_code.split(":", 1)[0])
+                    exit_code_raw = str(item.get("exit_code") or "").strip()
+                    ec = exit_code_int_from_slurm_exit_code(exit_code_raw)
+                    if isinstance(ec, int):
+                        record["exit_code"] = ec
                     break
             except Exception:
                 slurm_state = None
+
+            if not slurm_state:
+                # Minimal local Slurm installs may have accounting disabled (sacct unavailable).
+                # Fall back to `scontrol show job` to resolve terminal state and exit code.
+                try:
+                    cmd = build_scontrol_show_job_command(scheduler_job_id)
+                    proc = subprocess.run(
+                        cmd,
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                        timeout=5,
+                    )
+                    props = parse_scontrol_show_job_output(proc.stdout)
+                    slurm_state = str(props.get("JobState") or "").strip() or None
+                    exit_code_raw = str(props.get("ExitCode") or "").strip()
+                    ec = exit_code_int_from_slurm_exit_code(exit_code_raw)
+                    if isinstance(ec, int):
+                        record["exit_code"] = ec
+                except Exception:
+                    slurm_state = None
         else:
             record["scheduler_state"] = slurm_state
 
         if slurm_state:
+            record["scheduler_state"] = slurm_state
             mapped = dispatch_state_from_slurm_state(slurm_state)
             if mapped:
                 # Do not override explicit cancel state recorded by the API.

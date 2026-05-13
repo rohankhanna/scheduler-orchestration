@@ -111,6 +111,45 @@ def build_sacct_job_query_command(job_id: str) -> list[str]:
     ]
 
 
+def build_scontrol_show_job_command(job_id: str) -> list[str]:
+    job_id = str(job_id)
+    return ["scontrol", "show", "job", job_id]
+
+
+def parse_scontrol_show_job_output(stdout: str) -> dict[str, str]:
+    """Parse `scontrol show job <id>` output into a small dict.
+
+    The output is key=value tokens separated by whitespace/newlines.
+    We only care about a few stable keys.
+    """
+
+    out: dict[str, str] = {}
+    for raw_line in str(stdout or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        for token in line.split():
+            if "=" not in token:
+                continue
+            k, v = token.split("=", 1)
+            k = k.strip()
+            v = v.strip()
+            if k and v and k not in out:
+                out[k] = v
+    return out
+
+
+def exit_code_int_from_slurm_exit_code(exit_code: str) -> int | None:
+    raw = str(exit_code or "").strip()
+    if not raw:
+        return None
+    # Slurm uses "0:0" format (exit:signal).
+    head = raw.split(":", 1)[0].strip()
+    if head.isdigit():
+        return int(head)
+    return None
+
+
 def parse_sacct_output(stdout: str) -> list[dict[str, str]]:
     # parsable2 uses | delimiters.
     items: list[dict[str, str]] = []
