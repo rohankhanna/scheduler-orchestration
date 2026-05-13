@@ -16,6 +16,13 @@ dependencies = [
   "httpx>=0.27",
 ]
 
+[project.optional-dependencies]
+dev = [
+  "pytest>=8",
+  "pyyaml>=6",
+  "jsonschema>=4",
+]
+
 [project.scripts]
 dispatch = "dispatch.dispatch:main"
 

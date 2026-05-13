@@ -41,13 +41,22 @@ Install (editable):
 
 - python -m pip install -e .
 
-Then you can run from any directory:
+Then you can run from any directory.
+
+Canonical local runtime dir:
+
+- /home/rohankhanna/.local/share/scheduler-orchestration/runtime
+
+Managed server mode (normal operator mode):
 
 - dispatch --help
-- dispatch server start --runtime-dir /abs/path/to/dispatch-runtime
+- dispatch server start --runtime-dir /home/rohankhanna/.local/share/scheduler-orchestration/runtime
+- dispatch server status --runtime-dir /home/rohankhanna/.local/share/scheduler-orchestration/runtime
 
 Then:
 
 - UI: http://127.0.0.1:8780/ui
-- Logs: dispatch server logs -f --runtime-dir /abs/path/to/dispatch-runtime
-- Stop: dispatch server stop --runtime-dir /abs/path/to/dispatch-runtime
+- Logs: dispatch server logs -f --runtime-dir /home/rohankhanna/.local/share/scheduler-orchestration/runtime
+- Stop: dispatch server stop --runtime-dir /home/rohankhanna/.local/share/scheduler-orchestration/runtime
+
+Foreground mode is development-only. It intentionally does not write pid/log files, so `dispatch server status` and `dispatch server stop` cannot manage a foreground launch. Use managed server mode for anything expected to survive operator handoff or machine restart/restore.

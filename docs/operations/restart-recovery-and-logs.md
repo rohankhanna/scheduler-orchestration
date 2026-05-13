@@ -15,7 +15,11 @@ All durable artifacts are stored under `SCHED_ORCH_RUNTIME_DIR`.
 
 If unset, the default is a relative `runtime/` directory.
 
-Recommended: set `SCHED_ORCH_RUNTIME_DIR` to an absolute path on persistent storage.
+Recommended canonical local runtime dir:
+
+- `/home/rohankhanna/.local/share/scheduler-orchestration/runtime`
+
+Recommended: set `SCHED_ORCH_RUNTIME_DIR` to an absolute path on persistent storage (for example the canonical local runtime dir above).
 
 ## Durable layout
 

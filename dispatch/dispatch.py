@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import signal
 import subprocess
@@ -36,6 +37,10 @@ def _default_pid_path(runtime_dir: Path) -> Path:
 
 def _default_log_path(runtime_dir: Path) -> Path:
     return _server_state_dir(runtime_dir) / "dispatch-server.log"
+
+
+def _default_meta_path(runtime_dir: Path) -> Path:
+    return _server_state_dir(runtime_dir) / "dispatch-server.meta.json"
 
 
 def _read_pid(path: Path) -> int | None:
@@ -145,12 +150,85 @@ def _uvicorn_argv(host: str, port: int, reload: bool) -> list[str]:
 class ServerPaths:
     pid_path: Path
     log_path: Path
+    meta_path: Path
 
 
 def _server_paths(runtime_dir: Path, pid_path: str | None, log_path: str | None) -> ServerPaths:
     pid = Path(pid_path) if pid_path else _default_pid_path(runtime_dir)
     log = Path(log_path) if log_path else _default_log_path(runtime_dir)
-    return ServerPaths(pid_path=pid, log_path=log)
+    meta = _default_meta_path(runtime_dir)
+    return ServerPaths(pid_path=pid, log_path=log, meta_path=meta)
+
+
+def _now_epoch_s() -> int:
+    return int(time.time())
+
+
+def _write_server_meta(
+    path: Path,
+    *,
+    runtime_dir: Path,
+    host: str,
+    port: int,
+    foreground: bool,
+    reload: bool,
+    pid: int | None,
+    pid_file: Path,
+    log_file: Path,
+) -> None:
+    # Meta is intentionally non-secret: it contains only process/runtime topology.
+    payload = {
+        "runtime_dir": str(runtime_dir),
+        "host": host,
+        "port": int(port),
+        "foreground": bool(foreground),
+        "reload": bool(reload),
+        "pid": int(pid) if pid is not None else None,
+        "pid_file": str(pid_file),
+        "log_file": str(log_file),
+        "base_url": f"http://{host}:{int(port)}",
+        "started_at_epoch_s": _now_epoch_s(),
+    }
+    _write_text_atomic(path, json.dumps(payload, sort_keys=True) + "\n", mode=0o600)
+
+
+def _read_server_meta(path: Path) -> dict[str, Any] | None:
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    raw = raw.strip()
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    return data
+
+
+def _is_dispatch_server_at(base_url: str) -> bool:
+    # Best-effort only; used for diagnostics. Must not require auth and must not print response bodies.
+    try:
+        import httpx
+
+        with httpx.Client(base_url=base_url.rstrip("/"), timeout=2.0) as http:
+            r = http.get("/openapi.json")
+            if r.status_code != 200:
+                return False
+            body = r.json()
+            if not isinstance(body, dict):
+                return False
+            info = body.get("info")
+            if not isinstance(info, dict):
+                return False
+            title = str(info.get("title") or "").strip()
+            # Current FastAPI app title is "scheduler-orchestration".
+            return title == "scheduler-orchestration"
+    except Exception:
+        return False
 
 
 def _cmd_server_start(args: argparse.Namespace) -> int:
@@ -177,6 +255,27 @@ def _cmd_server_start(args: argparse.Namespace) -> int:
         sys.stderr.write(f"listen: http://{args.host}:{args.port}\n")
         sys.stderr.write(f"ui:     http://{args.host}:{args.port}/ui\n")
         sys.stderr.write("\n")
+        sys.stderr.write("NOTE: foreground mode is for development only.\n")
+        sys.stderr.write("      It does NOT write pid/log files, so `dispatch server status/stop` cannot manage it.\n")
+        sys.stderr.write("      For a managed server, omit --foreground.\n")
+        sys.stderr.write("\n")
+
+        # Write non-secret meta for later diagnostics (still no pid/log files).
+        try:
+            _write_server_meta(
+                paths.meta_path,
+                runtime_dir=runtime_dir,
+                host=str(args.host),
+                port=int(args.port),
+                foreground=True,
+                reload=bool(args.reload),
+                pid=None,
+                pid_file=paths.pid_path,
+                log_file=paths.log_path,
+            )
+        except Exception:
+            pass
+
         # In foreground mode, do not write PID/log files.
         proc = subprocess.run(argv, env=env)
         return int(proc.returncode)
@@ -202,6 +301,21 @@ def _cmd_server_start(args: argparse.Namespace) -> int:
 
     _write_text_atomic(paths.pid_path, f"{proc.pid}\n", mode=0o600)
 
+    try:
+        _write_server_meta(
+            paths.meta_path,
+            runtime_dir=runtime_dir,
+            host=str(args.host),
+            port=int(args.port),
+            foreground=False,
+            reload=bool(args.reload),
+            pid=int(proc.pid),
+            pid_file=paths.pid_path,
+            log_file=paths.log_path,
+        )
+    except Exception:
+        pass
+
     sys.stdout.write("dispatch server started\n")
     sys.stdout.write(f"pid:        {proc.pid}\n")
     sys.stdout.write(f"runtime_dir: {runtime_dir}\n")
@@ -219,6 +333,26 @@ def _cmd_server_status(args: argparse.Namespace) -> int:
     if pid is None:
         sys.stdout.write("dispatch server: not running (no pid file)\n")
         sys.stdout.write(f"pid_file: {paths.pid_path}\n")
+
+        # Diagnostics for common mismatch: the port is serving Dispatch, but not managed under this runtime dir.
+        meta = _read_server_meta(paths.meta_path)
+        base_url = None
+        foreground = None
+        if meta:
+            base_url = str(meta.get("base_url") or "").strip() or None
+            foreground = bool(meta.get("foreground")) if "foreground" in meta else None
+
+        # Fall back to the default listen address, which is the common local dev/operator default.
+        if not base_url:
+            base_url = f"http://{DEFAULT_HOST}:{DEFAULT_PORT}"
+
+        if _is_dispatch_server_at(base_url):
+            sys.stdout.write("WARNING: dispatch server appears to be running outside this runtime dir or outside managed mode.\n")
+            sys.stdout.write(f"detected_url: {base_url}/ui\n")
+            if foreground is True:
+                sys.stdout.write("note: the last recorded start under this runtime dir was foreground mode (dev-only).\n")
+            sys.stdout.write("hint: start managed mode with: dispatch server start --runtime-dir /ABS/PATH\n")
+
         return 1
 
     if not _pid_is_running(pid):
@@ -248,7 +382,8 @@ def _cmd_server_stop(args: argparse.Namespace) -> int:
         sys.stderr.write("dispatch server not running (stale pid file)\n")
         sys.stderr.write(f"pid: {pid}\n")
         _best_effort_remove(paths.pid_path)
-        return 1
+        sys.stderr.write("removed stale pid file\n")
+        return 0
 
     sig = signal.SIGTERM
     sys.stdout.write(f"stopping dispatch server (pid {pid})\n")
@@ -399,7 +534,11 @@ def _build_parser() -> argparse.ArgumentParser:
     start.add_argument("--pid-file", default="", help="Override pid file path")
     start.add_argument("--log-file", default="", help="Override log file path")
     start.add_argument("--reload", action="store_true", help="Enable uvicorn --reload")
-    start.add_argument("--foreground", action="store_true", help="Run in foreground (no pid/log files)")
+    start.add_argument(
+        "--foreground",
+        action="store_true",
+        help="Development-only: run in foreground (does not write pid/log files; status/stop cannot manage it)",
+    )
     start.set_defaults(func=_cmd_server_start)
 
     stop = server_sub.add_parser("stop", help="Stop the server")
