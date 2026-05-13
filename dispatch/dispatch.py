@@ -488,9 +488,7 @@ def _cmd_bootstrap(args: argparse.Namespace) -> int:
             return 1
 
         # 4) mint api key
-        body: dict[str, Any] = {}
-        if args.key_label:
-            body["label"] = args.key_label
+        body: dict[str, Any] = {"label": args.key_label, "ttl_seconds": 30 * 24 * 3600}
 
         r = http.post(
             f"/v1/projects/{project_id}/api-keys",
