@@ -329,3 +329,63 @@ def test_dispatch_doctor_warns_when_slurm_backend_has_no_gpu_gres(tmp_path, monk
     assert "PASS" in out
     assert "active_execution_backend: slurm" in out
     assert "WARN: slurm backend is active but Slurm does not appear to advertise GPU GRES" in out
+
+
+def test_dispatch_server_shutdown_reports_summary_and_stops_server(monkeypatch, tmp_path, capsys):
+    from dispatch import dispatch
+
+    runtime = tmp_path / "runtime"
+    runtime.mkdir(parents=True, exist_ok=True)
+
+    class R:
+        drained = True
+        cancel_attempted = 2
+        canceled = 2
+        remaining = 0
+        timed_out = False
+
+    monkeypatch.setattr("dispatch.graceful_shutdown.graceful_shutdown", lambda *a, **k: R())
+
+    stopped: list[bool] = []
+
+    def fake_stop(args):
+        stopped.append(True)
+        return 0
+
+    monkeypatch.setattr(dispatch, "_cmd_server_stop", fake_stop)
+
+    rc = dispatch.main([
+        "server",
+        "shutdown",
+        "--runtime-dir",
+        str(runtime),
+        "--graceful-timeout",
+        "60",
+    ])
+    assert rc == 0
+
+    out = capsys.readouterr().out
+    assert "dispatch server shutdown" in out
+    assert "cancel_attempted: 2" in out
+    assert "remaining_non_terminal: 0" in out
+    assert stopped == [True]
+
+
+def test_dispatch_server_shutdown_returns_nonzero_on_timeout(monkeypatch, tmp_path):
+    from dispatch import dispatch
+
+    runtime = tmp_path / "runtime"
+    runtime.mkdir(parents=True, exist_ok=True)
+
+    class R:
+        drained = True
+        cancel_attempted = 0
+        canceled = 0
+        remaining = 1
+        timed_out = True
+
+    monkeypatch.setattr("dispatch.graceful_shutdown.graceful_shutdown", lambda *a, **k: R())
+    monkeypatch.setattr(dispatch, "_cmd_server_stop", lambda args: 0)
+
+    rc = dispatch.main(["server", "shutdown", "--runtime-dir", str(runtime)])
+    assert rc == 1

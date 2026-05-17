@@ -596,6 +596,42 @@ def _cmd_server_stop(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_server_shutdown(args: argparse.Namespace) -> int:
+    """Graceful shutdown: drain + cancel in-flight jobs, wait (bounded), then stop server."""
+
+    runtime_dir = _runtime_dir(args.runtime_dir)
+
+    from dispatch.graceful_shutdown import graceful_shutdown
+
+    result = graceful_shutdown(
+        runtime_dir,
+        cancel_inflight=not bool(args.no_cancel),
+        drain=not bool(args.no_drain),
+        graceful_timeout_s=float(args.graceful_timeout),
+        poll_interval_s=float(args.poll_interval),
+    )
+
+    sys.stdout.write("dispatch server shutdown\n")
+    sys.stdout.write(f"runtime_dir: {runtime_dir}\n")
+    sys.stdout.write(f"drained: {result.drained}\n")
+    sys.stdout.write(f"cancel_attempted: {result.cancel_attempted}\n")
+    sys.stdout.write(f"cancel_requested: {result.canceled}\n")
+    sys.stdout.write(f"remaining_non_terminal: {result.remaining}\n")
+    sys.stdout.write(f"timed_out: {result.timed_out}\n")
+
+    stop_args = argparse.Namespace(
+        runtime_dir=args.runtime_dir,
+        pid_file=getattr(args, "pid_file", ""),
+        log_file=getattr(args, "log_file", ""),
+        timeout=float(args.stop_timeout),
+    )
+    _cmd_server_stop(stop_args)
+
+    if result.timed_out or result.remaining:
+        return 1
+    return 0
+
+
 def _cmd_server_logs(args: argparse.Namespace) -> int:
     runtime_dir = _runtime_dir(args.runtime_dir)
     paths = _server_paths(runtime_dir, args.pid_file, args.log_file)
@@ -825,6 +861,20 @@ def _build_parser() -> argparse.ArgumentParser:
     stop.add_argument("--log-file", default="")
     stop.add_argument("--timeout", type=float, default=5.0, help="Seconds to wait before SIGKILL")
     stop.set_defaults(func=_cmd_server_stop)
+
+    shutdown = server_sub.add_parser(
+        "shutdown",
+        help="Graceful shutdown: drain + cancel in-flight jobs, wait (bounded), then stop server",
+    )
+    shutdown.add_argument("--runtime-dir", default="")
+    shutdown.add_argument("--pid-file", default="")
+    shutdown.add_argument("--log-file", default="")
+    shutdown.add_argument("--graceful-timeout", type=float, default=60.0, help="Seconds to wait for jobs to reach terminal state")
+    shutdown.add_argument("--poll-interval", type=float, default=1.0, help="Seconds between refresh attempts")
+    shutdown.add_argument("--stop-timeout", type=float, default=5.0, help="Seconds to wait for server process before SIGKILL")
+    shutdown.add_argument("--no-drain", action="store_true", help="Do not enable drain mode before waiting/canceling")
+    shutdown.add_argument("--no-cancel", action="store_true", help="Do not attempt cancel; only wait for jobs to become terminal")
+    shutdown.set_defaults(func=_cmd_server_shutdown)
 
     status = server_sub.add_parser("status", help="Check whether the server is running")
     status.add_argument("--runtime-dir", default="")

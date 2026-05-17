@@ -37,6 +37,7 @@ Run the test suite:
 
 - docs/operations/restart-recovery-and-logs.md
 - docs/operations/dispatch-local-slurm.md
+- docs/operations/dispatch-graceful-shutdown.md
 
 ## Run the server (dev)
 
