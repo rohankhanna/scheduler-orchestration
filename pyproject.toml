@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dispatch-orchestration"
-version = "0.2.0"
+version = "0.2.1"
 description = "Dispatch: local-first orchestration server + operator CLI"
 requires-python = ">=3.12"
 readme = "README.md"
@@ -27,4 +27,4 @@ dev = [
 dispatch = "dispatch.dispatch:main"
 
 [tool.setuptools]
-packages = ["dispatch", "dispatch.server"]
+packages = ["dispatch", "dispatch.server", "dispatch_client"]
