@@ -306,3 +306,26 @@ def test_dispatch_doctor_reports_pass_when_runtime_matches(tmp_path, monkeypatch
     out = capsys.readouterr().out
     assert "PASS" in out
     assert str(active_pid) in out
+
+
+def test_dispatch_doctor_warns_when_slurm_backend_has_no_gpu_gres(tmp_path, monkeypatch, capsys):
+    from dispatch import dispatch
+
+    runtime = tmp_path / "runtime"
+    runtime.mkdir(parents=True, exist_ok=True)
+
+    active_pid = 4444
+
+    monkeypatch.setattr(dispatch, "_port_listening_pid", lambda host, port: active_pid)
+    monkeypatch.setattr(dispatch, "_is_dispatch_server_at", lambda base_url: True)
+    monkeypatch.setattr(dispatch, "_runtime_dir_from_pid_environ", lambda pid: runtime)
+    monkeypatch.setattr(dispatch, "_execution_backend_from_pid_environ", lambda pid: "slurm")
+    monkeypatch.setattr(dispatch, "_slurm_gpu_gres_available", lambda: False)
+
+    rc = dispatch.main(["doctor", "--runtime-dir", str(runtime), "--base-url", "http://127.0.0.1:9999"])
+    assert rc == 0
+
+    out = capsys.readouterr().out
+    assert "PASS" in out
+    assert "active_execution_backend: slurm" in out
+    assert "WARN: slurm backend is active but Slurm does not appear to advertise GPU GRES" in out

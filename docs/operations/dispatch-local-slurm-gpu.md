@@ -66,3 +66,7 @@ Evidence to capture:
 2) `/v1/jobs/{id}/logs` stdout includes:
 - `nvidia-smi -L` output
 - `True` for `torch.cuda.is_available()`
+
+Operator hint
+- `dispatch doctor --base-url http://127.0.0.1:8780 --runtime-dir <RUNTIME_DIR>` prints `active_execution_backend`.
+- If `active_execution_backend=slurm` and Slurm is not advertising GPU GRES, doctor prints a WARN.

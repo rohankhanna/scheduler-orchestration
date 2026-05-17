@@ -313,6 +313,66 @@ def _runtime_dir_from_pid_environ(pid: int) -> Path | None:
     return None
 
 
+def _execution_backend_from_pid_environ(pid: int) -> str | None:
+    """Best-effort read of SCHED_ORCH_EXECUTION_BACKEND from /proc/<pid>/environ."""
+
+    try:
+        data = Path(f"/proc/{int(pid)}/environ").read_bytes()
+    except (FileNotFoundError, PermissionError, OSError):
+        return None
+
+    for raw in data.split(b"\x00"):
+        if not raw:
+            continue
+        if raw.startswith(b"SCHED_ORCH_EXECUTION_BACKEND="):
+            try:
+                value = raw.split(b"=", 1)[1].decode("utf-8", errors="replace").strip()
+            except Exception:
+                return None
+            if not value:
+                return None
+            return value
+
+    return None
+
+
+def _slurm_gpu_gres_available() -> bool | None:
+    """Return True/False if Slurm appears to advertise GPU GRES; None if unknown.
+
+    This is a best-effort operator hint only (doctor output); it should not fail the server.
+    """
+
+    import shutil
+
+    if shutil.which("sinfo") is None:
+        return None
+
+    try:
+        proc = subprocess.run(
+            ["sinfo", "-h", "-o", "%G"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except Exception:
+        return None
+
+    text = str(proc.stdout or "").strip()
+    if not text:
+        return None
+
+    # Common outputs:
+    # - "(null)"
+    # - "gpu:1"
+    # - "gpu:gb10:1" (if Type is used)
+    if "(null)" in text:
+        return False
+    if "gpu" in text.lower():
+        return True
+    return False
+
+
 def _cmd_server_start(args: argparse.Namespace) -> int:
     runtime_dir = _runtime_dir(args.runtime_dir)
     paths = _server_paths(runtime_dir, args.pid_file, args.log_file)
@@ -586,6 +646,10 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     if active_pid is not None:
         active_runtime_dir = _runtime_dir_from_pid_environ(active_pid)
 
+    active_execution_backend: str | None = None
+    if active_pid is not None:
+        active_execution_backend = _execution_backend_from_pid_environ(active_pid)
+
     sys.stdout.write("dispatch doctor\n")
     sys.stdout.write(f"base_url: {base_url}\n")
     sys.stdout.write(f"expected_runtime_dir: {expected_runtime_dir}\n")
@@ -602,6 +666,9 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     else:
         sys.stdout.write(f"active_runtime_dir: {active_runtime_dir}\n")
         sys.stdout.write(f"active_auth_store_path: {active_runtime_dir / 'auth' / 'api_keys.json'}\n")
+
+    if active_execution_backend:
+        sys.stdout.write(f"active_execution_backend: {active_execution_backend}\n")
 
     sys.stdout.write("\n")
 
@@ -626,6 +693,18 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
         return 1
 
     sys.stdout.write("PASS: active server runtime dir matches expected runtime dir.\n")
+
+    # Operator hint: if using slurm backend, warn if Slurm isn't advertising GPU GRES.
+    if (active_execution_backend or "").strip().lower() == "slurm":
+        avail = _slurm_gpu_gres_available()
+        if avail is False:
+            sys.stdout.write(
+                "WARN: slurm backend is active but Slurm does not appear to advertise GPU GRES (sinfo %G shows (null)).\n"
+            )
+            sys.stdout.write(
+                "      Jobs with resources.graphics_processing_units>0 may remain pending or fail to schedule until GRES is configured.\n"
+            )
+
     return 0
 
 
