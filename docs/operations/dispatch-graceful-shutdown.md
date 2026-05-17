@@ -35,11 +35,27 @@ Key flags:
 - The graceful timeout is a hard cap for this invocation.
 - If jobs do not reach terminal state before the deadline, the command exits non-zero.
 
-## Cancellation gating
+## Cancellation behavior
 
-Cancellation is a control action and is intentionally gated by environment variables:
+`dispatch server shutdown` is an explicit operator action. By default it will attempt to cancel non-terminal jobs via the relevant backend adapters.
 
-- slurm backend cancellation requires: `SCHED_ORCH_ENABLE_SCHEDULER_EXEC=1`
-- direct backend cancellation requires: `SCHED_ORCH_ENABLE_DIRECT_CANCEL=1`
+You can disable cancellation per-backend:
 
-If cancellation is not enabled, Dispatch records `cancel_failed_reason` in the job ledger and may time out.
+- `--no-slurm-cancel`
+- `--no-direct-cancel`
+
+Or disable cancellation entirely:
+
+- `--no-cancel`
+
+Dispatch records `cancel_failed_reason` in the job ledger when cancellation is skipped or fails.
+
+## Stale/non-terminal ledger entries
+
+If the ledger contains very old non-terminal entries (for example, from a previous machine run where the scheduler state is no longer queryable), shutdown may time out even though no real work is still running.
+
+To avoid that, you can ignore ancient entries when deciding whether shutdown completed:
+
+- `--ignore-older-than-hours N`
+
+This does not delete or rewrite the ledger entry; it only excludes it from the shutdown completion decision for that invocation.

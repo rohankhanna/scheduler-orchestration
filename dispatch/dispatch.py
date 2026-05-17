@@ -494,6 +494,9 @@ def _cmd_server_status(args: argparse.Namespace) -> int:
     runtime_dir = _runtime_dir(args.runtime_dir)
     paths = _server_paths(runtime_dir, args.pid_file, args.log_file)
 
+    show_non_terminal = bool(getattr(args, "show_non_terminal", False))
+    non_terminal_max = int(getattr(args, "non_terminal_max", 50) or 50)
+
     pid = _read_pid(paths.pid_path)
     if pid is None:
         sys.stdout.write("dispatch server: not running (no pid file)\n")
@@ -550,6 +553,21 @@ def _cmd_server_status(args: argparse.Namespace) -> int:
     sys.stdout.write(f"pid: {pid}\n")
     sys.stdout.write(f"pid_file: {paths.pid_path}\n")
     sys.stdout.write(f"log: {paths.log_path}\n")
+
+    if show_non_terminal:
+        try:
+            from dispatch.graceful_shutdown import get_non_terminal_records
+
+            records = get_non_terminal_records(runtime_dir)
+            sys.stdout.write(f"non_terminal_count: {len(records)}\n")
+            for record in records[: max(0, non_terminal_max)]:
+                server_job_id = str(record.get("server_job_id") or "").strip()
+                state = str(record.get("state") or "").strip().lower() or "unknown"
+                backend = str(record.get("execution_backend") or "").strip().lower() or "unknown"
+                sys.stdout.write(f"- {server_job_id} state={state} backend={backend}\n")
+        except Exception:
+            sys.stdout.write("non_terminal_count: <unavailable>\n")
+
     return 0
 
 
@@ -609,6 +627,9 @@ def _cmd_server_shutdown(args: argparse.Namespace) -> int:
         drain=not bool(args.no_drain),
         graceful_timeout_s=float(args.graceful_timeout),
         poll_interval_s=float(args.poll_interval),
+        allow_slurm_cancel=not bool(args.no_slurm_cancel),
+        allow_direct_cancel=not bool(args.no_direct_cancel),
+        ignore_older_than_hours=(float(args.ignore_older_than_hours) if args.ignore_older_than_hours is not None else None),
     )
 
     sys.stdout.write("dispatch server shutdown\n")
@@ -874,12 +895,22 @@ def _build_parser() -> argparse.ArgumentParser:
     shutdown.add_argument("--stop-timeout", type=float, default=5.0, help="Seconds to wait for server process before SIGKILL")
     shutdown.add_argument("--no-drain", action="store_true", help="Do not enable drain mode before waiting/canceling")
     shutdown.add_argument("--no-cancel", action="store_true", help="Do not attempt cancel; only wait for jobs to become terminal")
+    shutdown.add_argument("--no-slurm-cancel", action="store_true", help="Do not attempt to cancel slurm backend jobs during shutdown")
+    shutdown.add_argument("--no-direct-cancel", action="store_true", help="Do not attempt to cancel direct backend jobs during shutdown")
+    shutdown.add_argument(
+        "--ignore-older-than-hours",
+        type=float,
+        default=None,
+        help="Ignore non-terminal ledger entries older than this many hours when deciding whether shutdown completed",
+    )
     shutdown.set_defaults(func=_cmd_server_shutdown)
 
     status = server_sub.add_parser("status", help="Check whether the server is running")
     status.add_argument("--runtime-dir", default="")
     status.add_argument("--pid-file", default="")
     status.add_argument("--log-file", default="")
+    status.add_argument("--show-non-terminal", action="store_true", help="Print non-terminal ledger entries (best-effort)")
+    status.add_argument("--non-terminal-max", type=int, default=50, help="Max non-terminal records to print")
     status.set_defaults(func=_cmd_server_status)
 
     doctor_server = server_sub.add_parser("doctor", help="Diagnose server/runtime-dir/keyring mismatches")
