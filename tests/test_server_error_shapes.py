@@ -17,7 +17,10 @@ def test_unauthorized_errors_have_stable_json_shape(tmp_path, monkeypatch):
 
     r = client.get("/v1/queue")
     assert r.status_code == 401
-    assert r.json() == {"error": "unauthorized"}
+    assert r.json() == {
+        "error": "unauthorized",
+        "message": "missing X-API-Key header (jobs endpoints also accept Authorization: Bearer <api_key>)",
+    }
 
 
 def test_bad_request_errors_have_stable_json_shape(tmp_path, monkeypatch):

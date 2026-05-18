@@ -26,6 +26,13 @@ The canonical auth header is:
 
 The official client always uses `X-API-Key`.
 
+For additive compatibility on jobs endpoints, the server also accepts:
+
+- `Authorization: Bearer <api key>`
+- `Authorization: ApiKey <api key>`
+
+This alias exists to reduce operator confusion; consumers should still prefer the official client and canonical `X-API-Key` header.
+
 ## Example
 
 ```python

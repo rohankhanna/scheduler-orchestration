@@ -107,25 +107,49 @@ def _expired_api_key_message() -> str:
     return "API key expired. Regenerate a local key with: python -m dispatch.keyring mint --ttl 30d --label example-client"
 
 
-def _require_api_key(x_api_key: str | None) -> None:
+def _missing_jobs_api_key_message() -> str:
+    return "missing X-API-Key header (jobs endpoints also accept Authorization: Bearer <api_key>)"
+
+
+def _token_from_authorization_header(authorization: str | None, *, allowed_schemes: set[str]) -> str | None:
+    raw = str(authorization or "").strip()
+    if not raw:
+        return None
+    parts = raw.split(" ", 1)
+    if len(parts) != 2:
+        return None
+    allowed = {scheme.lower() for scheme in allowed_schemes}
+    if parts[0].lower() not in allowed:
+        return None
+    token = parts[1].strip()
+    if not token:
+        return None
+    return token
+
+
+def _require_api_key(x_api_key: str | None, authorization: str | None = None) -> None:
     # Dispatch job submission uses project API keys.
     # Legacy env-var and legacy keyring remain accepted for backward compatibility,
     # but are not required for server startup.
-    if not x_api_key:
-        raise HTTPException(status_code=401, detail="unauthorized")
+    candidate = x_api_key or _token_from_authorization_header(
+        authorization,
+        allowed_schemes={"bearer", "apikey"},
+    )
+    if not candidate:
+        raise HTTPException(status_code=401, detail={"message": _missing_jobs_api_key_message()})
 
     expected = os.environ.get("SCHED_ORCH_API_KEY")
-    if expected and hmac.compare_digest(x_api_key, expected):
+    if expected and hmac.compare_digest(candidate, expected):
         return
 
     # Prefer Dispatch project key store.
-    if check_project_api_key(_runtime_dir(), x_api_key):
+    if check_project_api_key(_runtime_dir(), candidate):
         return
 
     # Legacy keyring auth (format-compatible with project key store, but not required).
     keyring_path = _api_keyring_path()
     if keyring_path.exists():
-        result = check_api_key_against_keyring(keyring_path, x_api_key, now=datetime.now(timezone.utc))
+        result = check_api_key_against_keyring(keyring_path, candidate, now=datetime.now(timezone.utc))
         if result.ok:
             return
         if result.expired:
@@ -334,18 +358,7 @@ def create_app() -> FastAPI:
         return JSONResponse(status_code=400, content={"error": "bad_request"})
 
     def _bearer_token_from_header(authorization: str | None) -> str | None:
-        raw = str(authorization or "").strip()
-        if not raw:
-            return None
-        parts = raw.split(" ", 1)
-        if len(parts) != 2:
-            return None
-        if parts[0].lower() != "bearer":
-            return None
-        token = parts[1].strip()
-        if not token:
-            return None
-        return token
+        return _token_from_authorization_header(authorization, allowed_schemes={"bearer"})
 
     def _require_user_session(authorization: str | None) -> dict[str, Any]:
         token = _bearer_token_from_header(authorization)
@@ -656,8 +669,11 @@ async function mintKey() {
         return {"key_id": str(key_id), "revoked": True}
 
     @app.get("/v1/queue")
-    def list_queue(x_api_key: str | None = Header(default=None, alias="X-API-Key")) -> dict[str, Any]:
-        _require_api_key(x_api_key)
+    def list_queue(
+        x_api_key: str | None = Header(default=None, alias="X-API-Key"),
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        _require_api_key(x_api_key, authorization)
 
         cmd = build_squeue_list_command()
         try:
@@ -677,8 +693,9 @@ async function mintKey() {
     def set_drain(
         body: dict[str, Any],
         x_api_key: str | None = Header(default=None, alias="X-API-Key"),
+        authorization: str | None = Header(default=None, alias="Authorization"),
     ) -> dict[str, Any]:
-        _require_api_key(x_api_key)
+        _require_api_key(x_api_key, authorization)
 
         enabled = bool(body.get("enabled"))
         state = set_drain_mode(_drain_state_path(), enabled=enabled)
@@ -688,8 +705,9 @@ async function mintKey() {
     def submit_job(
         body: dict[str, Any],
         x_api_key: str | None = Header(default=None, alias="X-API-Key"),
+        authorization: str | None = Header(default=None, alias="Authorization"),
     ) -> dict[str, Any]:
-        _require_api_key(x_api_key)
+        _require_api_key(x_api_key, authorization)
 
         spec = body.get("spec")
         if not isinstance(spec, dict):
@@ -790,8 +808,9 @@ async function mintKey() {
     def list_jobs(
         refresh: bool = Query(default=False),
         x_api_key: str | None = Header(default=None, alias="X-API-Key"),
+        authorization: str | None = Header(default=None, alias="Authorization"),
     ) -> dict[str, Any]:
-        _require_api_key(x_api_key)
+        _require_api_key(x_api_key, authorization)
 
         runtime_dir = _runtime_dir()
 
@@ -847,8 +866,9 @@ async function mintKey() {
         server_job_id: str,
         refresh: bool = Query(default=False),
         x_api_key: str | None = Header(default=None, alias="X-API-Key"),
+        authorization: str | None = Header(default=None, alias="Authorization"),
     ) -> dict[str, Any]:
-        _require_api_key(x_api_key)
+        _require_api_key(x_api_key, authorization)
 
         record = read_job_record(_runtime_dir(), server_job_id)
         if not record:
@@ -884,8 +904,9 @@ async function mintKey() {
     def get_job_logs(
         server_job_id: str,
         x_api_key: str | None = Header(default=None, alias="X-API-Key"),
+        authorization: str | None = Header(default=None, alias="Authorization"),
     ) -> dict[str, Any]:
-        _require_api_key(x_api_key)
+        _require_api_key(x_api_key, authorization)
 
         record = read_job_record(_runtime_dir(), server_job_id)
         if not record:
@@ -918,8 +939,9 @@ async function mintKey() {
     def cancel_job(
         server_job_id: str,
         x_api_key: str | None = Header(default=None, alias="X-API-Key"),
+        authorization: str | None = Header(default=None, alias="Authorization"),
     ) -> dict[str, Any]:
-        _require_api_key(x_api_key)
+        _require_api_key(x_api_key, authorization)
 
         record = read_job_record(_runtime_dir(), server_job_id)
         if not record:
