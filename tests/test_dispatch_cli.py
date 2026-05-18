@@ -331,6 +331,17 @@ def test_dispatch_doctor_warns_when_slurm_backend_has_no_gpu_gres(tmp_path, monk
     assert "WARN: slurm backend is active but Slurm does not appear to advertise GPU GRES" in out
 
 
+def test_dispatch_doctor_auth_hints_prints_header_guidance(capsys):
+    from dispatch import dispatch
+
+    rc = dispatch.main(["doctor", "--auth-hints"])
+    assert rc == 0
+
+    out = capsys.readouterr().out
+    assert "Use X-API-Key for /v1/jobs endpoints" in out
+    assert "Use Authorization Bearer access_token for /v1/projects, /v1/login" in out
+
+
 def test_dispatch_server_shutdown_reports_summary_and_stops_server(monkeypatch, tmp_path, capsys):
     from dispatch import dispatch
 

@@ -36,6 +36,7 @@ Run the test suite:
 ## Operations
 
 - docs/clients/python.md
+- docs/operations/dispatch-auth.md
 - docs/operations/restart-recovery-and-logs.md
 - docs/operations/dispatch-local-slurm.md
 - docs/operations/dispatch-graceful-shutdown.md

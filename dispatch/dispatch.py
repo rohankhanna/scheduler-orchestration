@@ -678,6 +678,12 @@ def _http_client(base_url: str):
 
 
 def _cmd_doctor(args: argparse.Namespace) -> int:
+    if bool(getattr(args, "auth_hints", False)):
+        sys.stdout.write("dispatch doctor auth-hints\n")
+        sys.stdout.write("Use X-API-Key for /v1/jobs endpoints\n")
+        sys.stdout.write("Use Authorization Bearer access_token for /v1/projects, /v1/login, /v1/users, /v1/api-keys endpoints\n")
+        return 0
+
     base_url = str(args.base_url or "").strip().rstrip("/")
     if not base_url:
         sys.stderr.write("doctor requires --base-url\n")
@@ -916,6 +922,7 @@ def _build_parser() -> argparse.ArgumentParser:
     doctor_server = server_sub.add_parser("doctor", help="Diagnose server/runtime-dir/keyring mismatches")
     doctor_server.add_argument("--runtime-dir", default="")
     doctor_server.add_argument("--base-url", default=f"http://{DEFAULT_HOST}:{DEFAULT_PORT}")
+    doctor_server.add_argument("--auth-hints", action="store_true", help="Print auth header guidance for jobs vs session endpoints")
     doctor_server.set_defaults(func=_cmd_doctor)
 
     logs = server_sub.add_parser("logs", help="Print server logs")
@@ -929,6 +936,7 @@ def _build_parser() -> argparse.ArgumentParser:
     doctor = sub.add_parser("doctor", help="Diagnose server/runtime-dir/keyring mismatches")
     doctor.add_argument("--runtime-dir", default="")
     doctor.add_argument("--base-url", default=f"http://{DEFAULT_HOST}:{DEFAULT_PORT}")
+    doctor.add_argument("--auth-hints", action="store_true", help="Print auth header guidance for jobs vs session endpoints")
     doctor.set_defaults(func=_cmd_doctor)
 
     bootstrap = sub.add_parser("bootstrap", help="Bootstrap: create user, login, create project, mint api key")
