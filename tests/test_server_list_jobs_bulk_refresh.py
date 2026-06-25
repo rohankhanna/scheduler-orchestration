@@ -77,4 +77,10 @@ def test_list_jobs_refresh_requires_explicit_enable(monkeypatch, tmp_path: Path)
     client = TestClient(create_app())
     resp = client.get("/v1/jobs?refresh=1", headers={"X-API-Key": "test-key"})
     assert resp.status_code == 400
-    assert resp.json() == {"error": "bad_request"}
+    assert resp.json() == {
+        "error": "bad_request",
+        "message": (
+            "refresh requires SCHED_ORCH_ENABLE_BULK_REFRESH=1 for scheduler-backed jobs "
+            "or SCHED_ORCH_ENABLE_DIRECT_REFRESH=1 for direct jobs"
+        ),
+    }

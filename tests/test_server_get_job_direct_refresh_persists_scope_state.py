@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from subprocess import CompletedProcess
 
+import pytest
 from fastapi.testclient import TestClient
 
 
@@ -33,7 +34,12 @@ def _write_direct_job(runtime_dir: Path, server_job_id: str) -> None:
     )
 
 
-def test_get_job_refresh_direct_persists_scope_state(monkeypatch, tmp_path: Path) -> None:
+@pytest.mark.parametrize("refresh_value", ["1", "true"])
+def test_get_job_refresh_direct_persists_scope_state(
+    monkeypatch,
+    tmp_path: Path,
+    refresh_value: str,
+) -> None:
     monkeypatch.setenv("SCHED_ORCH_API_KEY", "test-key")
     monkeypatch.setenv("SCHED_ORCH_RUNTIME_DIR", str(tmp_path))
     monkeypatch.setenv("SCHED_ORCH_ENABLE_DIRECT_REFRESH", "1")
@@ -57,7 +63,7 @@ def test_get_job_refresh_direct_persists_scope_state(monkeypatch, tmp_path: Path
     from dispatch.server.app import create_app
 
     client = TestClient(create_app())
-    r = client.get(f"/v1/jobs/{server_job_id}?refresh=1", headers={"X-API-Key": "test-key"})
+    r = client.get(f"/v1/jobs/{server_job_id}?refresh={refresh_value}", headers={"X-API-Key": "test-key"})
     assert r.status_code == 200
 
     record_path = tmp_path / "scheduler-job-ledger" / "jobs" / f"{server_job_id}.json"

@@ -66,4 +66,6 @@ finally:
 - `get_job_logs(server_job_id)`
 - `list_jobs(refresh=...)`
 
+`list_jobs(refresh=True)` sends `refresh=1`. The server also accepts `refresh=true`. Direct-backend list refresh is enabled with `SCHED_ORCH_ENABLE_DIRECT_REFRESH=1`; scheduler-backed bulk list refresh is enabled with `SCHED_ORCH_ENABLE_BULK_REFRESH=1`.
+
 If you find a mismatch, fix Dispatch + the official client here and bump the version.

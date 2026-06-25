@@ -232,6 +232,25 @@ def _bulk_refresh_enabled() -> bool:
     return val in {"1", "true", "yes", "on"}
 
 
+def _list_refresh_disabled_message() -> str:
+    return (
+        "refresh requires SCHED_ORCH_ENABLE_BULK_REFRESH=1 for scheduler-backed jobs "
+        "or SCHED_ORCH_ENABLE_DIRECT_REFRESH=1 for direct jobs"
+    )
+
+
+def _list_refresh_backend_allowed(
+    backend_name: str,
+    *,
+    bulk_refresh_enabled: bool,
+    direct_refresh_enabled: bool,
+) -> bool:
+    if backend_name == "direct":
+        # Existing direct bulk-refresh behavior is best-effort when only the bulk gate is set.
+        return direct_refresh_enabled or bulk_refresh_enabled
+    return bulk_refresh_enabled
+
+
 def _bulk_refresh_max_jobs() -> int:
     raw = os.environ.get("SCHED_ORCH_BULK_REFRESH_MAX_JOBS", "200").strip()
     try:
@@ -815,32 +834,49 @@ async function mintKey() {
         runtime_dir = _runtime_dir()
 
         if refresh:
-            if not _bulk_refresh_enabled():
-                raise HTTPException(status_code=400, detail="bad_request")
-
             max_jobs = _bulk_refresh_max_jobs()
             if max_jobs > 0:
+                records: list[dict[str, Any]] = []
                 try:
                     records = [read_job_record_from_path(path) for path in list_job_paths(runtime_dir)]
-                    terminal_states = _terminal_job_states()
-
-                    backend_names = sorted({str(r.get("execution_backend") or "").strip().lower() for r in records})
-                    for backend_name in backend_names:
-                        if not backend_name:
-                            continue
-
-                        backend_ops = get_backend_ops(
-                            backend_name,
-                            drain_state_path=_drain_state_path(),
-                            direct_payload_execution_enabled=_direct_payload_execution_enabled(),
-                            direct_refresh_enabled=_direct_refresh_enabled(),
-                            direct_state_inference_enabled=_direct_state_inference_enabled(),
-                        )
-                        if backend_ops and backend_ops.bulk_refresh:
-                            backend_ops.bulk_refresh(runtime_dir, records, max_jobs, terminal_states)
                 except Exception:
-                    # Best-effort only: do not fail the list endpoint for refresh failures.
-                    pass
+                    records = []
+
+                backend_names = sorted({str(r.get("execution_backend") or "").strip().lower() for r in records})
+                backend_names = [name for name in backend_names if name]
+                if backend_names:
+                    bulk_refresh_enabled = _bulk_refresh_enabled()
+                    direct_refresh_enabled = _direct_refresh_enabled()
+                    refreshable_backend_names = [
+                        name
+                        for name in backend_names
+                        if _list_refresh_backend_allowed(
+                            name,
+                            bulk_refresh_enabled=bulk_refresh_enabled,
+                            direct_refresh_enabled=direct_refresh_enabled,
+                        )
+                    ]
+                    if not refreshable_backend_names:
+                        raise HTTPException(
+                            status_code=400,
+                            detail={"message": _list_refresh_disabled_message()},
+                        )
+
+                    try:
+                        terminal_states = _terminal_job_states()
+                        for backend_name in refreshable_backend_names:
+                            backend_ops = get_backend_ops(
+                                backend_name,
+                                drain_state_path=_drain_state_path(),
+                                direct_payload_execution_enabled=_direct_payload_execution_enabled(),
+                                direct_refresh_enabled=direct_refresh_enabled,
+                                direct_state_inference_enabled=_direct_state_inference_enabled(),
+                            )
+                            if backend_ops and backend_ops.bulk_refresh:
+                                backend_ops.bulk_refresh(runtime_dir, records, max_jobs, terminal_states)
+                    except Exception:
+                        # Best-effort only: do not fail the list endpoint for refresh failures.
+                        pass
 
         items: list[dict[str, Any]] = []
         for path in reversed(list_job_paths(runtime_dir)):

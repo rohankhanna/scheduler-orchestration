@@ -4,6 +4,7 @@ import json
 import subprocess
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from dispatch.server.app import create_app
@@ -35,10 +36,14 @@ def _write_job(runtime_dir: Path, server_job_id: str) -> None:
     )
 
 
-def test_list_jobs_refresh_direct_persists_scope_state_when_enabled(monkeypatch, tmp_path: Path) -> None:
+@pytest.mark.parametrize("refresh_value", ["1", "true"])
+def test_list_jobs_refresh_direct_persists_scope_state_when_enabled_without_bulk_gate(
+    monkeypatch,
+    tmp_path: Path,
+    refresh_value: str,
+) -> None:
     monkeypatch.setenv("SCHED_ORCH_API_KEY", "test-key")
     monkeypatch.setenv("SCHED_ORCH_RUNTIME_DIR", str(tmp_path))
-    monkeypatch.setenv("SCHED_ORCH_ENABLE_BULK_REFRESH", "1")
     monkeypatch.setenv("SCHED_ORCH_BULK_REFRESH_MAX_JOBS", "10")
     monkeypatch.setenv("SCHED_ORCH_ENABLE_DIRECT_REFRESH", "1")
 
@@ -59,7 +64,7 @@ def test_list_jobs_refresh_direct_persists_scope_state_when_enabled(monkeypatch,
     monkeypatch.setattr(app_mod.subprocess, "run", fake_run, raising=True)
 
     client = TestClient(create_app())
-    resp = client.get("/v1/jobs?refresh=1", headers={"X-API-Key": "test-key"})
+    resp = client.get(f"/v1/jobs?refresh={refresh_value}", headers={"X-API-Key": "test-key"})
     assert resp.status_code == 200
 
     rec = json.loads(
